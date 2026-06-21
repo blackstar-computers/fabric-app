@@ -218,6 +218,7 @@ impl Dashboard {
                 }
                 cx.notify();
             }
+            DashboardMsg::Sparkline { .. } => {}
         }
     }
 
@@ -257,7 +258,8 @@ impl Dashboard {
         match msg {
             LiveMessage::Connected => self.live = true,
             LiveMessage::Disconnected => self.live = false,
-            LiveMessage::RunEvent(ev) => {
+            LiveMessage::JobEvent(_) => {}
+                        LiveMessage::RunEvent(ev) => {
                 if self.selected.as_ref() == Some(&(ev.pod.clone(), ev.run.clone())) {
                     if !ev.point.is_empty() {
                         if let Some(series) = &mut self.series {

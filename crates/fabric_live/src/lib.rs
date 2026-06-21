@@ -6,7 +6,7 @@ pub use patch::{append_point, default_max_points, patch_summary};
 
 use anyhow::{Context, Result};
 use fabric_api::Client;
-use fabric_types::SseRunEvent;
+use fabric_types::{SseJobEvent, SseRunEvent};
 use futures::StreamExt;
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -16,6 +16,7 @@ pub enum LiveMessage {
     Connected,
     Disconnected,
     RunEvent(SseRunEvent),
+    JobEvent(SseJobEvent),
 }
 
 /// Read one SSE session until the stream closes. Calls `on_event` synchronously for each message.
@@ -45,9 +46,23 @@ pub async fn stream_events(
                 if data.trim().is_empty() {
                     continue;
                 }
-                match serde_json::from_str::<SseRunEvent>(data) {
-                    Ok(ev) if ev.kind == "run" => on_event(LiveMessage::RunEvent(ev)),
-                    Ok(_) => debug!("ignored sse event"),
+                match serde_json::from_str::<serde_json::Value>(data) {
+                    Ok(v) => {
+                        let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        match kind {
+                            "run" => {
+                                if let Ok(ev) = serde_json::from_value::<SseRunEvent>(v) {
+                                    on_event(LiveMessage::RunEvent(ev));
+                                }
+                            }
+                            "job" => {
+                                if let Ok(ev) = serde_json::from_value::<SseJobEvent>(v) {
+                                    on_event(LiveMessage::JobEvent(ev));
+                                }
+                            }
+                            _ => debug!("ignored sse event type={kind}"),
+                        }
+                    }
                     Err(e) => debug!("malformed sse json: {e}"),
                 }
             }

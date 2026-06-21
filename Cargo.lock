@@ -1635,6 +1635,8 @@ dependencies = [
  "futures",
  "gpui",
  "gpui_platform",
+ "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

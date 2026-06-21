@@ -1,4 +1,7 @@
-use fabric_types::{RunsSummary, RunSeries, SERVICE_TOKEN_HEADER};
+use fabric_types::{
+    BoxProgressResp, FleetsResp, InstancesResp, JobsResp, RunSeries, RunsSummary,
+    SERVICE_TOKEN_HEADER, TreeResp,
+};
 use reqwest::StatusCode;
 use std::time::Duration;
 use thiserror::Error;
@@ -63,6 +66,57 @@ impl Client {
         self.get_json(&path).await
     }
 
+    pub async fn fetch_fleets(&self) -> Result<FleetsResp, ClientError> {
+        self.get_json("/api/fleets").await
+    }
+
+    pub async fn fetch_instances(&self) -> Result<InstancesResp, ClientError> {
+        self.get_json("/api/boxes/instances").await
+    }
+
+    /// Provisioning progress for a GPU box (`web_app` assign/rent flow).
+    pub async fn fetch_box_progress(&self, contract: &str) -> Result<BoxProgressResp, ClientError> {
+        let path = format!(
+            "/api/boxes/progress?contract={}",
+            url_encode(contract)
+        );
+        self.get_json(&path).await
+    }
+
+    pub async fn fetch_jobs(&self, fleet: &str) -> Result<JobsResp, ClientError> {
+        let path = if fleet.is_empty() {
+            "/api/jobs".to_string()
+        } else {
+            format!("/api/jobs?fleet={}", url_encode(fleet))
+        };
+        self.get_json(&path).await
+    }
+
+    pub async fn fetch_tree(
+        &self,
+        branch: u32,
+        fleet: &str,
+        probe: bool,
+    ) -> Result<TreeResp, ClientError> {
+        let probe_q = if probe { "1" } else { "0" };
+        let mut path = format!("/api/tree?branch={branch}&probe={probe_q}");
+        if !fleet.is_empty() {
+            path.push_str(&format!("&fleet={}", url_encode(fleet)));
+        }
+        self.get_json(&path).await
+    }
+
+    pub async fn fleet_action(
+        &self,
+        action: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, ClientError> {
+        let mut body = payload.as_object().cloned().unwrap_or_default();
+        body.insert("action".into(), serde_json::Value::String(action.into()));
+        self.post_json("/api/fleets", serde_json::Value::Object(body))
+            .await
+    }
+
     pub async fn health_check(&self) -> Result<(), ClientError> {
         let (_status, _body) = self.get_raw("/api/fleets").await?;
         Ok(())
@@ -82,6 +136,36 @@ impl Client {
             .header("Accept", "text/event-stream")
             .send()
             .await?)
+    }
+
+    async fn post_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<T, ClientError> {
+        let url = format!("{}{}", self.base_url, path);
+        let response = self
+            .http
+            .post(&url)
+            .header(SERVICE_TOKEN_HEADER, &self.token)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap_or_else(|_| {
+            serde_json::json!({ "error": "non-JSON response from portal" })
+        });
+        if !status.is_success() {
+            let message = body
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("request failed")
+                .to_string();
+            return Err(ClientError::Api { status, message });
+        }
+        Ok(serde_json::from_value(body)?)
     }
 
     async fn get_json<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {

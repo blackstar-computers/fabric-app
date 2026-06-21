@@ -1,21 +1,23 @@
 //! Portal API types — kept in sync with `web_app/src/types.ts`.
 
+mod fleets;
+mod runspec;
 mod series;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub use fleets::{
+    BoxProgressResp, Fleet, FleetsResp, Instance, InstancesResp, Job, JobPod, JobsResp,
+    SseJobEvent, TreeNode, TreeResp,
+};
+pub use runspec::{
+    Headline, RunContext, RunMediaDef, RunMetricDef, RunOutput, RunSpecEnvelope, UiCapabilities,
+};
 pub use series::{nearest_epoch_index, series_latest, RunSeries};
 
 pub const DEFAULT_PORTAL_URL: &str = "https://agents.fabric.blackstar.inc";
 pub const SERVICE_TOKEN_HEADER: &str = "X-Fleet-Token";
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Headline {
-    pub key: String,
-    pub goal: Option<String>,
-    pub label: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct RunScalars {
@@ -41,6 +43,8 @@ pub struct RunScalars {
     pub grid: Option<String>,
     pub dataset: Option<String>,
     pub sweep: Option<String>,
+    #[serde(default)]
+    pub runspec: Option<RunSpecEnvelope>,
     #[serde(default, flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -192,6 +196,30 @@ mod tests {
         let json = include_str!("../../../fixtures/runs_summary.json");
         let summary: RunsSummary = serde_json::from_str(json).expect("fixture parses");
         assert!(!summary.runs.is_empty());
+    }
+
+    #[test]
+    fn deserializes_runspec_envelope() {
+        let json = r#"{
+            "pod": "f:n1",
+            "name": "r_n1",
+            "runspec": {
+                "substrate_kind": "canvas",
+                "output": {
+                    "headline": { "key": "top1", "goal": "max" },
+                    "metrics": [{ "key": "loss", "lower_better": true }]
+                }
+            }
+        }"#;
+        let run: RunScalars = serde_json::from_str(json).expect("parse");
+        let rs = run.runspec.expect("runspec");
+        assert_eq!(rs.substrate_kind.as_deref(), Some("canvas"));
+        assert_eq!(
+            rs.output
+                .and_then(|o| o.headline)
+                .map(|h| h.key),
+            Some("top1".into())
+        );
     }
 
     #[test]
