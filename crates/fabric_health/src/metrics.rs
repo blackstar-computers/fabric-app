@@ -1,20 +1,42 @@
 //! Metric panel catalog (mirrors `web_app/src/lib/runs.ts` METRIC_PANELS).
 
-use fabric_types::{RunScalars, RunSeries};
-use crate::is_lm_run;
+pub const SYSTEM_PANEL_IDS: &[&str] = &["gpu_util", "gpu_mem"];
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetricPanel {
-    pub id: &'static str,
-    pub title: &'static str,
-    pub series_key: &'static str,
+    pub id: String,
+    pub title: String,
+    pub series_key: String,
     pub lm: bool,
     pub pct: bool,
-    pub unit: Option<&'static str>,
+    pub unit: Option<String>,
 }
 
-pub const METRIC_PANELS: &[MetricPanel] = &[
-    MetricPanel {
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StaticMetricPanel {
+    pub(crate) id: &'static str,
+    pub(crate) title: &'static str,
+    pub(crate) series_key: &'static str,
+    pub(crate) lm: bool,
+    pub(crate) pct: bool,
+    pub(crate) unit: Option<&'static str>,
+}
+
+impl StaticMetricPanel {
+    pub(crate) fn into_panel(self) -> MetricPanel {
+        MetricPanel {
+            id: self.id.into(),
+            title: self.title.into(),
+            series_key: self.series_key.into(),
+            lm: self.lm,
+            pct: self.pct,
+            unit: self.unit.map(str::to_string),
+        }
+    }
+}
+
+const LEGACY_PANELS: &[StaticMetricPanel] = &[
+    StaticMetricPanel {
         id: "ppl",
         title: "Perplexity",
         series_key: "ppl",
@@ -22,7 +44,7 @@ pub const METRIC_PANELS: &[MetricPanel] = &[
         pct: false,
         unit: None,
     },
-    MetricPanel {
+    StaticMetricPanel {
         id: "ce",
         title: "Cross-entropy",
         series_key: "ce_val",
@@ -30,7 +52,7 @@ pub const METRIC_PANELS: &[MetricPanel] = &[
         pct: false,
         unit: None,
     },
-    MetricPanel {
+    StaticMetricPanel {
         id: "lm_acc",
         title: "Next-token accuracy",
         series_key: "top1",
@@ -38,7 +60,7 @@ pub const METRIC_PANELS: &[MetricPanel] = &[
         pct: true,
         unit: None,
     },
-    MetricPanel {
+    StaticMetricPanel {
         id: "score",
         title: "Validation score",
         series_key: "top1",
@@ -46,7 +68,7 @@ pub const METRIC_PANELS: &[MetricPanel] = &[
         pct: false,
         unit: None,
     },
-    MetricPanel {
+    StaticMetricPanel {
         id: "loss",
         title: "Train loss",
         series_key: "loss",
@@ -54,7 +76,7 @@ pub const METRIC_PANELS: &[MetricPanel] = &[
         pct: false,
         unit: None,
     },
-    MetricPanel {
+    StaticMetricPanel {
         id: "lr",
         title: "Learning rate",
         series_key: "lr",
@@ -62,7 +84,7 @@ pub const METRIC_PANELS: &[MetricPanel] = &[
         pct: false,
         unit: None,
     },
-    MetricPanel {
+    StaticMetricPanel {
         id: "dream",
         title: "Dream rollout PSNR",
         series_key: "dream",
@@ -70,7 +92,7 @@ pub const METRIC_PANELS: &[MetricPanel] = &[
         pct: false,
         unit: None,
     },
-    MetricPanel {
+    StaticMetricPanel {
         id: "gnorm",
         title: "Gradient norm",
         series_key: "gnorm",
@@ -78,7 +100,7 @@ pub const METRIC_PANELS: &[MetricPanel] = &[
         pct: false,
         unit: None,
     },
-    MetricPanel {
+    StaticMetricPanel {
         id: "gpu_util",
         title: "GPU utilization",
         series_key: "gpu_util",
@@ -86,7 +108,7 @@ pub const METRIC_PANELS: &[MetricPanel] = &[
         pct: false,
         unit: Some("%"),
     },
-    MetricPanel {
+    StaticMetricPanel {
         id: "gpu_mem",
         title: "GPU memory",
         series_key: "gpu_mem",
@@ -96,13 +118,12 @@ pub const METRIC_PANELS: &[MetricPanel] = &[
     },
 ];
 
-pub fn metric_panels_for_run(run: &RunScalars, series: Option<&RunSeries>) -> Vec<&'static MetricPanel> {
-    let lm = is_lm_run(run);
-    let Some(s) = series else {
-        return Vec::new();
-    };
-    METRIC_PANELS
-        .iter()
-        .filter(|p| p.lm == lm && !s.nums(p.series_key).is_empty())
-        .collect()
+pub fn legacy_panels() -> Vec<MetricPanel> {
+    LEGACY_PANELS.iter().copied().map(StaticMetricPanel::into_panel).collect()
 }
+
+pub fn legacy_panel_catalog() -> &'static [StaticMetricPanel] {
+    LEGACY_PANELS
+}
+
+pub use crate::output::metric_panels_for_run;

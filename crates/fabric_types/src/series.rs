@@ -133,7 +133,6 @@ fn decode_num_array(value: serde_json::Value) -> Option<Vec<f64>> {
     let nums: Vec<f64> = arr
         .iter()
         .filter_map(|v| v.as_f64().or_else(|| v.as_i64().map(|n| n as f64)))
-        .filter(|n| n.is_finite())
         .collect();
     if nums.is_empty() {
         None

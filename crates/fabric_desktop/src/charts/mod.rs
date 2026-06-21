@@ -54,6 +54,7 @@ pub struct PanelPaintCache {
     pub width: f32,
     pub height: f32,
     pub point_count: usize,
+    pub last_epoch: i64,
     pub grid: Path<Pixels>,
     pub line: Option<Path<Pixels>>,
 }

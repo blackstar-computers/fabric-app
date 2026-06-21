@@ -12,6 +12,7 @@ use gpui::{
 #[derive(Clone, Debug)]
 pub struct Theme {
     pub font_mono: SharedString,
+    pub font_brand: SharedString,
     pub row_h: f32,
     pub bg: Rgba,
     pub panel: Rgba,
@@ -42,6 +43,7 @@ impl Theme {
     pub fn bloomberg() -> Self {
         Self {
             font_mono: "SF Mono".into(),
+            font_brand: "Space Grotesk".into(),
             row_h: 20.,
             bg: rgb(0x000000),
             panel: rgb(0x0a0a0a),
@@ -81,7 +83,6 @@ impl Theme {
             .text_size(px(11.))
             .flex()
             .flex_col()
-            .p(px(6.))
     }
 
     pub fn block(&self) -> Div {
@@ -104,57 +105,32 @@ impl Theme {
             .bg(self.border)
     }
 
-    pub fn title_bar(&self, sse_live: bool, trailing: impl IntoElement) -> Div {
-        let (tag, tag_color) = if sse_live {
-            (" LIVE ", self.live)
+    fn live_pill_styles(&self, sse_live: bool) -> (&'static str, Rgba, Rgba, Rgba) {
+        if sse_live {
+            (" LIVE ", self.live, rgb(0x001800), self.live)
         } else {
-            (" POLL ", self.text_dim)
-        };
+            (" POLL ", self.text_dim, rgb(0x111111), self.border)
+        }
+    }
 
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_between()
-            .w_full()
-            .h(px(24.))
-            .px(px(8.))
-            .bg(self.panel_edge)
-            .border_b_1()
-            .border_color(self.border)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_color(self.amber)
-                            .font_weight(FontWeight::BOLD)
-                            .child("FABRIC"),
-                    )
-                    .child(div().text_color(self.text_dim).child("//"))
-                    .child(
-                        div()
-                            .text_color(self.data)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("RUNS"),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(trailing)
-                    .child(
-                        self.pill()
-                            .bg(if sse_live { rgb(0x001800) } else { rgb(0x111111) })
-                            .border_color(if sse_live { self.live } else { self.border })
-                            .text_color(tag_color)
-                            .child(self.pill_label(PILL_BTN_TEXT, tag)),
-                    ),
-            )
+    pub fn title_bar_live_pill(&self, sse_live: bool) -> Div {
+        let (tag, tag_color, fill, border) = self.live_pill_styles(sse_live);
+        self.title_bar_control()
+            .border_1()
+            .bg(fill)
+            .border_color(border)
+            .text_color(tag_color)
+            .child(self.pill_label(PILL_BTN_TEXT, tag))
+    }
+
+    /// Fixed-width refresh control so label swaps do not break click targets.
+    pub fn title_bar_refresh_button(&self, fetching: bool) -> Div {
+        self.title_bar_button(
+            if fetching { " FETCH… " } else { " ↻ REFRESH " },
+            fetching,
+        )
+        .min_w(px(96.))
+        .justify_center()
     }
 
     pub fn status_bar(&self, text: impl Into<SharedString>) -> Div {
@@ -245,6 +221,41 @@ impl Theme {
             .cursor_pointer()
             .hover(|s| s.bg(self.panel_edge).text_color(self.amber))
             .child(self.pill_label(PILL_BTN_TEXT, label))
+    }
+
+    /// Full-height title-bar control (stretches to the unified window chrome row).
+    fn title_bar_control(&self) -> Div {
+        div()
+            .flex_none()
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .px(px(10.))
+    }
+
+    pub fn title_bar_button(&self, label: impl Into<SharedString>, active: bool) -> Div {
+        self.title_bar_control()
+            .text_size(PILL_BTN_TEXT)
+            .line_height(PILL_BTN_TEXT)
+            .border_1()
+            .bg(self.panel_edge)
+            .border_color(if active { self.amber } else { self.border })
+            .text_color(if active { self.amber } else { self.text_dim })
+            .cursor_pointer()
+            .occlude()
+            .hover(|s| s.bg(self.panel).text_color(self.amber))
+            .child(label.into())
+    }
+
+    /// Kind-filter segment pill in the overview toolbar.
+    pub fn filter_pill(&self, active: bool, label: &'static str) -> Div {
+        self.pill()
+            .border_color(if active { self.amber } else { self.border })
+            .text_color(if active { self.amber } else { self.text_dim })
+            .cursor_pointer()
+            .hover(|s| s.bg(self.panel_edge).text_color(self.amber))
+            .child(self.pill_label(PILL_CHIP_TEXT, label))
     }
 
     /// Pod / fleet tag in the War Room command bar (same size as [`Self::tone_chip`]).

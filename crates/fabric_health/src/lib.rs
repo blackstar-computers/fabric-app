@@ -1,10 +1,17 @@
 //! War Room derivations — torch-free port of `web_app/src/lib/health.ts` + `runs.ts` (subset).
 
 mod metrics;
+mod output;
+mod runs;
 
 use fabric_types::{RunScalars, RunSeries};
 
-pub use metrics::{metric_panels_for_run, MetricPanel, METRIC_PANELS};
+pub use metrics::{legacy_panels, metric_panels_for_run, MetricPanel};
+pub use output::{headline_of, headline_series_key, panels_for, run_is_lm};
+pub use runs::{
+    color_for_key, filter_runs, group_key, member_key, matches_kind, matches_search,
+    pick_sparkline_key, sparkline_values, KindFilter,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -24,6 +31,9 @@ pub struct HealthSignal {
 }
 
 pub fn is_lm_run(run: &RunScalars) -> bool {
+    if run.runspec.as_ref().is_some_and(|rs| rs.substrate_is_lm()) {
+        return true;
+    }
     if run.metric.as_deref() == Some("ppl") {
         return true;
     }

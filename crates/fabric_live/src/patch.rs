@@ -44,6 +44,9 @@ fn apply_scalars(row: &mut RunScalars, scalars: &HashMap<String, serde_json::Val
             "last_tgt" => row.last_tgt = val.as_f64(),
             "last_lr" => row.last_lr = val.as_f64(),
             "best" => row.best = val.as_f64(),
+            "total_epochs" => row.total_epochs = val.as_i64(),
+            "created" => row.created = val.as_f64().or_else(|| val.as_i64().map(|n| n as f64)),
+            "sweep" => row.sweep = val.as_str().map(str::to_string),
             _ => {
                 row.extra.insert(key.clone(), val.clone());
             }
@@ -68,9 +71,8 @@ pub fn append_point(
         if key == "epoch" {
             continue;
         }
-        if let Some(n) = val.as_f64() {
-            if n.is_finite() {
-                let entry = metrics.entry(key.clone()).or_default();
+        if let Some(entry) = metrics.get_mut(key) {
+            if let Some(n) = val.as_f64().or_else(|| val.as_i64().map(|v| v as f64)) {
                 entry.push(n);
                 trim_vec(entry, cap);
             }
@@ -148,6 +150,20 @@ mod tests {
         assert_eq!(row.best, Some(64.47));
         assert_eq!(row.last_epoch, Some(12));
         assert_eq!(row.eta_sec, Some(3600.0));
+    }
+
+    #[test]
+    fn patch_updates_total_epochs_and_created() {
+        let mut summary = mk_summary(vec![mk_run(60.0, 10)]);
+        let mut scalars = HashMap::new();
+        scalars.insert("total_epochs".into(), serde_json::json!(500));
+        scalars.insert("created".into(), serde_json::json!(1718880000));
+        scalars.insert("sweep".into(), serde_json::json!("lr_sweep"));
+        assert!(patch_summary(&mut summary, &run_event(scalars, None)));
+        let row = &summary.runs[0];
+        assert_eq!(row.total_epochs, Some(500));
+        assert_eq!(row.created, Some(1718880000.0));
+        assert_eq!(row.sweep.as_deref(), Some("lr_sweep"));
     }
 
     #[test]

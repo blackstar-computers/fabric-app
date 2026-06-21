@@ -274,10 +274,20 @@ fn metric_wall(
     let panel_count = panels.len();
 
     shell.child(
-        uniform_list(
-            "metric-wall",
-            panel_count,
-            cx.processor(move |this, range: Range<usize>, _window, cx| {
+        div()
+            .id("metric-wall")
+            .flex_1()
+            .min_h_0()
+            .on_hover(cx.listener(|this, hovered: &bool, _w, cx| {
+                if !hovered {
+                    this.set_cursor_x(None, cx);
+                }
+            }))
+            .child(
+                uniform_list(
+                    "metric-wall-list",
+                    panel_count,
+                    cx.processor(move |this, range: Range<usize>, _window, cx| {
                 let theme = Theme::get(cx);
                 let run = match this.selected_run() {
                     Some(r) => r.clone(),
@@ -306,10 +316,9 @@ fn metric_wall(
                     })
                     .collect()
             }),
-        )
-        .flex_1()
-        .min_h_0()
-        .w_full(),
+                )
+                .size_full(),
+            ),
     )
 }
 

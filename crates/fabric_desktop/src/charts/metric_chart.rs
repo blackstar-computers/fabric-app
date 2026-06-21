@@ -19,7 +19,7 @@ use crate::theme::Theme;
 
 const CHART_H: f32 = 120.0;
 const Y_GUTTER: f32 = 44.0;
-const MAX_PAINT_POINTS: usize = 800;
+const MAX_PAINT_POINTS: usize = 400;
 
 /// Fixed row height for [`gpui::uniform_list`] virtualization in the metric wall.
 ///
@@ -37,7 +37,7 @@ pub const METRIC_PANEL_ITEM_H: Pixels = px(176.);
 #[allow(clippy::too_many_arguments)]
 pub fn panel(
     theme: &Theme,
-    panel: &'static MetricPanel,
+    panel: &MetricPanel,
     series: &RunSeries,
     x_dom: (f64, f64),
     cursor_x: Option<f64>,
@@ -45,16 +45,16 @@ pub fn panel(
     paint_cache: ChartPaintCache,
     cx: &mut Context<Dashboard>,
 ) -> impl IntoElement {
-    let Some(xy) = build_xy(series, panel.series_key) else {
-        return waiting_panel(theme, panel.title);
+    let Some(xy) = build_xy(series, &panel.series_key) else {
+        return waiting_panel(theme, &panel.title);
     };
     let y_dom = y_domain(&xy);
 
-    let hover_val = cursor_x.and_then(|x| series.value_at_epoch(panel.series_key, x as i64));
-    let latest_val = series.latest(panel.series_key);
+    let hover_val = cursor_x.and_then(|x| series.value_at_epoch(&panel.series_key, x as i64));
+    let latest_val = series.latest(&panel.series_key);
     let readout_val = hover_val.or(latest_val);
     let readout = readout_val
-        .map(|v| fmt_readout(v, panel.pct, panel.unit))
+        .map(|v| fmt_readout(v, panel.pct, panel.unit.as_deref()))
         .unwrap_or_else(|| "—".into());
     let readout_color = if cursor_x.is_some() {
         theme.live
@@ -62,16 +62,18 @@ pub fn panel(
         theme.data
     };
 
-    let key = panel.id.to_string();
+    let key = panel.id.clone();
     let line_color = theme.live;
     let grid_color = theme.border;
     let cursor_color = with_alpha(theme.link, 0.6);
 
+    let draw_crosshair = cursor_x.is_some();
     let canvas_el = {
         let xy = xy.clone();
         let geoms = geoms.clone();
         let paint_cache = paint_cache.clone();
         let key = key.clone();
+        let crosshair_x = if draw_crosshair { cursor_x } else { None };
         canvas(
             move |bounds, _window, _cx| bounds,
             move |bounds, _state, window, _cx| {
@@ -86,7 +88,7 @@ pub fn panel(
                     &paint_cache,
                     line_color,
                     grid_color,
-                    cursor_x,
+                    crosshair_x,
                     cursor_color,
                 );
             },
@@ -95,7 +97,7 @@ pub fn panel(
     };
 
     let chart_area = div()
-        .id(panel.id)
+        .id(panel.id.clone())
         .flex_1()
         .h_full()
         .child(canvas_el)
@@ -110,11 +112,7 @@ pub fn panel(
                 }
             }
         }))
-        .on_hover(cx.listener(|this, hovered: &bool, _w, cx| {
-            if !*hovered {
-                this.set_cursor_x(None, cx);
-            }
-        }));
+        ;
 
     div()
         .flex_none()
@@ -135,7 +133,7 @@ pub fn panel(
                     div()
                         .text_color(theme.amber_dim)
                         .text_size(px(10.))
-                        .child(panel.title),
+                        .child(panel.title.clone()),
                 )
                 .child(
                     div()
@@ -155,7 +153,7 @@ pub fn panel(
         .child(x_axis(theme, x_dom))
 }
 
-fn waiting_panel(theme: &Theme, title: &'static str) -> gpui::Div {
+fn waiting_panel(theme: &Theme, title: &str) -> gpui::Div {
     div()
         .flex_none()
         .h(METRIC_PANEL_ITEM_H)
@@ -168,7 +166,7 @@ fn waiting_panel(theme: &Theme, title: &'static str) -> gpui::Div {
             div()
                 .text_color(theme.amber_dim)
                 .text_size(px(10.))
-                .child(title),
+                .child(title.to_string()),
         )
         .child(
             div()
@@ -227,13 +225,14 @@ fn geom_for(bounds: Bounds<Pixels>, x_dom: (f64, f64)) -> PlotGeom {
     }
 }
 
-fn paint_indices(len: usize) -> Vec<usize> {
-    if len <= MAX_PAINT_POINTS {
+fn paint_indices(len: usize, budget: usize) -> Vec<usize> {
+    let budget = budget.clamp(2, MAX_PAINT_POINTS);
+    if len <= budget {
         return (0..len).collect();
     }
-    let step = (len - 1) as f64 / (MAX_PAINT_POINTS - 1) as f64;
-    let mut idx = Vec::with_capacity(MAX_PAINT_POINTS);
-    for i in 0..MAX_PAINT_POINTS {
+    let step = (len - 1) as f64 / (budget - 1) as f64;
+    let mut idx = Vec::with_capacity(budget);
+    for i in 0..budget {
         idx.push(((i as f64) * step).round() as usize);
     }
     idx.sort_unstable();
@@ -265,22 +264,18 @@ fn build_panel_paths(
     let y_px = |yv: f64| -> f32 { (1.0 - ((yv - y_min) / y_span) as f32) * h };
 
     let mut grid = PathBuilder::stroke(px(1.0));
-    for i in 0..=4 {
-        let gy = (i as f32 / 4.0) * h;
+    for i in 0..=2 {
+        let gy = (i as f32 / 2.0) * h;
         grid.move_to(point(px(0.0), px(gy)));
         grid.line_to(point(px(w), px(gy)));
-    }
-    for i in 0..=4 {
-        let gx = (i as f32 / 4.0) * w;
-        grid.move_to(point(px(gx), px(0.0)));
-        grid.line_to(point(px(gx), px(h)));
     }
     let grid = grid.build().expect("grid path");
 
     let mut line = PathBuilder::stroke(px(1.5));
     let mut pen_down = false;
     let mut drew = false;
-    for i in paint_indices(xy.x.len()) {
+    let point_budget = (w.ceil() as usize).clamp(2, MAX_PAINT_POINTS);
+    for i in paint_indices(xy.x.len(), point_budget) {
         match xy.y[i] {
             Some(yv) => {
                 let p = point(px(x_px(xy.x[i])), px(y_px(yv)));
@@ -301,6 +296,7 @@ fn build_panel_paths(
         width: w,
         height: h,
         point_count: xy.x.len(),
+        last_epoch: xy.x.last().copied().unwrap_or(0.0) as i64,
         grid,
         line,
     }
@@ -330,8 +326,12 @@ fn paint_series(
 
     let cached = {
         let mut cache = paint_cache.borrow_mut();
+        let last_epoch = xy.x.last().copied().unwrap_or(0.0) as i64;
         let stale = cache.get(cache_key).is_none_or(|c| {
-            c.width != w || c.height != h || c.point_count != xy.x.len()
+            c.width != w
+                || c.height != h
+                || c.point_count != xy.x.len()
+                || c.last_epoch != last_epoch
         });
         if stale {
             let built = build_panel_paths(w, h, xy, x_dom, y_dom);
