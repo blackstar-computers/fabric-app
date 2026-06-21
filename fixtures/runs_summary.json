@@ -1,0 +1,36 @@
+{
+  "updated": "2026-06-20T12:00:00Z",
+  "runs": [
+    {
+      "pod": "copytest:n1",
+      "name": "membands4_n1",
+      "group": "membands4",
+      "fleet": "copytest",
+      "metric": "psnr",
+      "best": 0.042,
+      "last_epoch": 842,
+      "total_epochs": 1000,
+      "eta_sec": 3600,
+      "created": 1718880000,
+      "status": "running",
+      "dataset": "mnist"
+    },
+    {
+      "pod": "copytest:n1",
+      "name": "mnist_recon50_n1",
+      "group": "mnist_recon50",
+      "fleet": "copytest",
+      "metric": "psnr",
+      "best": 0.891,
+      "last_epoch": 50,
+      "total_epochs": 50,
+      "created": 1718870000,
+      "status": "idle"
+    }
+  ],
+  "gpus": {
+    "active": 2,
+    "total": 4,
+    "detail": []
+  }
+}

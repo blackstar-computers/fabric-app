@@ -1,0 +1,20 @@
+[package]
+name = "fabric_live"
+description = "SSE live updates and in-place summary patching for Fabric runs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+fabric_api = { workspace = true }
+fabric_types = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

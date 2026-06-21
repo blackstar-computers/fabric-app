@@ -1,0 +1,23 @@
+[package]
+name = "fabric_desktop"
+description = "Fabric desktop dashboard — GPU-accelerated run monitor (macOS first)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "fabric-app"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+fabric_api = { workspace = true }
+fabric_live = { workspace = true }
+fabric_types = { workspace = true }
+gpui = { workspace = true }
+gpui_platform = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

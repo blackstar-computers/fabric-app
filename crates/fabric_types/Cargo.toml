@@ -1,0 +1,11 @@
+[package]
+name = "fabric_types"
+description = "Serde types for the Fabric portal API (mirrors web_app/src/types.ts)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
