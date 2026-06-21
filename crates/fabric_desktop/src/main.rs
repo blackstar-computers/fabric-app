@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 mod app;
 mod assets;
+mod auth;
 mod brand;
 mod charts;
 mod columns;
@@ -19,6 +20,7 @@ mod fleet_layout;
 mod fleet_ops;
 mod fleets;
 mod format;
+mod login;
 mod network;
 mod nav;
 mod overview;

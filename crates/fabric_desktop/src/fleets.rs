@@ -63,6 +63,7 @@ pub struct FleetsView {
     tree_phased_remaining: u8,
     pub progress: Option<BoxProgressResp>,
     progress_contract: Option<String>,
+    operator_email: Option<String>,
 }
 
 impl FleetsView {
@@ -90,11 +91,16 @@ impl FleetsView {
             tree_phased_remaining: 0,
             progress: None,
             progress_contract: None,
+            operator_email: None,
         }
     }
 
     pub fn attach(&mut self, cmd_tx: UnboundedSender<NetworkCommand>) {
         self.cmd_tx = Some(cmd_tx);
+    }
+
+    pub fn set_operator_email(&mut self, email: Option<String>) {
+        self.operator_email = email;
     }
 
     pub fn refresh_all(&mut self, cx: &mut Context<Self>) {
@@ -476,6 +482,11 @@ impl Render for FleetsView {
         let action = self.action_msg.clone();
         let tree_loading = self.tree_loading;
         let progress = self.progress.clone();
+        let operator_email = self.operator_email.clone();
+        let status_left = action
+            .as_ref()
+            .map(|m| SharedString::from(format!("OPS │ {m}")));
+        let show_status = status_left.is_some() || operator_email.is_some();
 
         div()
             .flex_1()
@@ -505,12 +516,11 @@ impl Render for FleetsView {
             .when_some(progress, |el, p| {
                 el.child(progress_bar(&theme, &p))
             })
-            .when_some(action, |el, m| {
-                el.child(
-                    theme
-                        .status_bar(format!("OPS │ {m}"))
-                        .text_color(theme.amber_dim),
-                )
+            .when(show_status, |el| {
+                el.child(theme.status_bar(
+                    status_left.unwrap_or_else(|| SharedString::from("")),
+                    operator_email.map(SharedString::from),
+                ))
             })
     }
 }

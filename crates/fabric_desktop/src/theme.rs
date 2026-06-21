@@ -133,7 +133,11 @@ impl Theme {
         .justify_center()
     }
 
-    pub fn status_bar(&self, text: impl Into<SharedString>) -> Div {
+    pub fn status_bar(
+        &self,
+        text: impl Into<SharedString>,
+        trailing: Option<SharedString>,
+    ) -> Div {
         div()
             .flex_none()
             .w_full()
@@ -146,7 +150,22 @@ impl Theme {
             .border_color(self.border)
             .text_size(px(10.))
             .text_color(self.amber_dim)
-            .child(text.into())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(text.into()),
+            )
+            .when_some(trailing, |el, email| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .pl(px(8.))
+                        .text_color(self.text_dim)
+                        .child(email),
+                )
+            })
     }
 
     pub fn table_header_row(&self) -> Div {

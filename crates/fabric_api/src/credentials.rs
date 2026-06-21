@@ -1,10 +1,11 @@
 use fabric_types::DEFAULT_PORTAL_URL;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 const KEYCHAIN_SERVICE: &str = "inc.blackstar.fabric";
 const KEYCHAIN_ACCOUNT: &str = "service-token";
 const USER_TOKEN_FILE: &str = ".config/fabric/service_token";
+const VM_TOKEN_FILE: &str = "/opt/fabric/.fleet_service_token";
 
 #[derive(Debug, Error)]
 pub enum CredentialsError {
@@ -26,19 +27,18 @@ pub fn load_service_token() -> Result<String, CredentialsError> {
         }
     }
 
+    if let Some((tok, source)) = read_first_token_file() {
+        let canonical = canonical_user_token_path();
+        if canonical.as_ref() != source.as_ref() {
+            let _ = save_service_token(&tok);
+        }
+        return Ok(tok);
+    }
+
     #[cfg(target_os = "macos")]
     if let Ok(tok) = read_keychain() {
         if !tok.is_empty() {
             return Ok(tok);
-        }
-    }
-
-    if let Some(path) = user_token_path() {
-        if path.exists() {
-            let tok = std::fs::read_to_string(path)?.trim().to_string();
-            if !tok.is_empty() {
-                return Ok(tok);
-            }
         }
     }
 
@@ -85,6 +85,48 @@ fn user_token_path() -> Option<PathBuf> {
         .map(|home| PathBuf::from(home).join(USER_TOKEN_FILE))
 }
 
+fn canonical_user_token_path() -> Option<PathBuf> {
+    user_token_path()
+}
+
+/// Same read order as `fleet/service_token.py::_candidate_files`, plus common alternates.
+fn candidate_token_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(f) = std::env::var("FABRIC_SERVICE_TOKEN_FILE") {
+        if !f.trim().is_empty() {
+            paths.push(PathBuf::from(f));
+        }
+    }
+    if let Some(home) = std::env::var("HOME").ok().map(PathBuf::from) {
+        paths.push(home.join(USER_TOKEN_FILE));
+        paths.push(home.join(".config/fabric/service_token.bak"));
+    }
+    paths.push(PathBuf::from(VM_TOKEN_FILE));
+    paths
+}
+
+fn read_first_token_file() -> Option<(String, Option<PathBuf>)> {
+    for path in candidate_token_paths() {
+        if let Ok(tok) = read_token_file(&path) {
+            if !tok.is_empty() {
+                return Some((tok, Some(path)));
+            }
+        }
+    }
+    None
+}
+
+fn read_token_file(path: &Path) -> Result<String, std::io::Error> {
+    if !path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "token file missing",
+        ));
+    }
+    let tok = std::fs::read_to_string(path)?.trim().to_string();
+    Ok(tok)
+}
+
 #[cfg(target_os = "macos")]
 fn read_keychain() -> Result<String, CredentialsError> {
     use security_framework::passwords::get_generic_password;
@@ -117,5 +159,14 @@ mod tests {
     fn default_portal_url_points_at_agents_host() {
         std::env::remove_var("FABRIC_PORTAL_URL");
         assert_eq!(default_portal_url(), DEFAULT_PORTAL_URL);
+    }
+
+    #[test]
+    fn candidate_paths_include_user_file_and_bak() {
+        let paths = candidate_token_paths();
+        let home = std::env::var("HOME").unwrap();
+        let home_path = PathBuf::from(&home);
+        assert!(paths.contains(&home_path.join(USER_TOKEN_FILE)));
+        assert!(paths.contains(&home_path.join(".config/fabric/service_token.bak")));
     }
 }

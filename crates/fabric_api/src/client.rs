@@ -7,6 +7,13 @@ use std::time::Duration;
 use thiserror::Error;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const AUTHORIZATION_HEADER: &str = "Authorization";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthKind {
+    ServiceToken,
+    SessionBearer,
+}
 
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -16,6 +23,32 @@ pub enum ClientError {
     Api { status: StatusCode, message: String },
     #[error("invalid json: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("session expired")]
+    Unauthorized,
+}
+
+impl ClientError {
+    pub fn is_unauthorized(&self) -> bool {
+        match self {
+            ClientError::Unauthorized => true,
+            ClientError::Api { status, .. } => *status == StatusCode::UNAUTHORIZED,
+            _ => false,
+        }
+    }
+
+    pub fn auth(message: impl Into<String>) -> Self {
+        Self::Api {
+            status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+        }
+    }
+
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -23,10 +56,23 @@ pub struct Client {
     http: reqwest::Client,
     base_url: String,
     token: String,
+    auth_kind: AuthKind,
 }
 
 impl Client {
     pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> Self {
+        Self::with_auth(base_url, token, AuthKind::ServiceToken)
+    }
+
+    pub fn with_session(base_url: impl Into<String>, access_token: impl Into<String>) -> Self {
+        Self::with_auth(base_url, access_token, AuthKind::SessionBearer)
+    }
+
+    fn with_auth(
+        base_url: impl Into<String>,
+        token: impl Into<String>,
+        auth_kind: AuthKind,
+    ) -> Self {
         Self {
             http: reqwest::Client::builder()
                 .user_agent("fabric-app/0.1")
@@ -35,6 +81,7 @@ impl Client {
                 .expect("reqwest client"),
             base_url: base_url.into().trim_end_matches('/').to_string(),
             token: token.into(),
+            auth_kind,
         }
     }
 
@@ -44,6 +91,19 @@ impl Client {
 
     pub fn token(&self) -> &str {
         &self.token
+    }
+
+    pub fn auth_kind(&self) -> AuthKind {
+        self.auth_kind.clone()
+    }
+
+    fn attach_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.auth_kind {
+            AuthKind::ServiceToken => req.header(SERVICE_TOKEN_HEADER, &self.token),
+            AuthKind::SessionBearer => {
+                req.header(AUTHORIZATION_HEADER, format!("Bearer {}", self.token))
+            }
+        }
     }
 
     pub async fn fetch_runs_summary(&self) -> Result<RunsSummary, ClientError> {
@@ -130,10 +190,11 @@ impl Client {
     pub async fn raw_get(&self, path: &str) -> Result<reqwest::Response, ClientError> {
         let url = format!("{}{}", self.base_url, path);
         Ok(self
-            .http
-            .get(&url)
-            .header(SERVICE_TOKEN_HEADER, &self.token)
-            .header("Accept", "text/event-stream")
+            .attach_auth(
+                self.http
+                    .get(&url)
+                    .header("Accept", "text/event-stream"),
+            )
             .send()
             .await?)
     }
@@ -145,11 +206,12 @@ impl Client {
     ) -> Result<T, ClientError> {
         let url = format!("{}{}", self.base_url, path);
         let response = self
-            .http
-            .post(&url)
-            .header(SERVICE_TOKEN_HEADER, &self.token)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
+            .attach_auth(
+                self.http
+                    .post(&url)
+                    .header("Accept", "application/json")
+                    .header("Content-Type", "application/json"),
+            )
             .json(&body)
             .send()
             .await?;
@@ -184,10 +246,11 @@ impl Client {
     async fn get_raw(&self, path: &str) -> Result<(StatusCode, serde_json::Value), ClientError> {
         let url = format!("{}{}", self.base_url, path);
         let response = self
-            .http
-            .get(&url)
-            .header(SERVICE_TOKEN_HEADER, &self.token)
-            .header("Accept", "application/json")
+            .attach_auth(
+                self.http
+                    .get(&url)
+                    .header("Accept", "application/json"),
+            )
             .send()
             .await?;
         let status = response.status();

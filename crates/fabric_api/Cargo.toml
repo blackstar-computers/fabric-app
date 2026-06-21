@@ -18,3 +18,15 @@ tracing = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
+block2 = { version = "0.6", features = ["alloc"] }
+dispatch2 = "0.3"
+objc2 = { version = "0.6", features = ["std"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow"] }
+objc2-authentication-services = { version = "0.3", default-features = false, features = [
+    "std",
+    "ASWebAuthenticationSession",
+    "ASWebAuthenticationSessionCallback",
+    "block2",
+    "ASFoundation",
+] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSError"] }

@@ -1,8 +1,8 @@
 //! UI → network command channel + background fetch/SSE loop.
 //!
 //! HTTP runs on the dedicated Tokio runtime (`fabric_api::spawn_network`), never on
-//! the GPUI thread. Independent fetches are spawned concurrently; results post back
-//! through `AppUiMsg` and `cx.spawn` in [`crate::app::FabricApp`].
+//! the GPUI thread. Auth is in [`crate::auth`]. Results post back through `AppUiMsg` and
+//! a single UI bridge in [`crate::app::FabricApp`].
 
 use crate::detail::SERIES_MAX_POINTS;
 use fabric_api::{spawn_network, Client, ClientError};
@@ -95,24 +95,7 @@ pub enum FleetsMsg {
 pub enum AppUiMsg {
     Dashboard(DashboardMsg),
     Fleets(FleetsMsg),
-}
-
-
-/// Runs dashboard entry — forwards only [`DashboardMsg`] from the shared app network loop.
-pub fn spawn_dashboard_network(
-    client: Client,
-    ui_tx: UnboundedSender<DashboardMsg>,
-    cmd_rx: UnboundedReceiver<NetworkCommand>,
-) {
-    let (app_tx, mut app_rx) = futures::channel::mpsc::unbounded();
-    spawn_app_network(client, app_tx, cmd_rx);
-    spawn_network(async move {
-        while let Some(msg) = app_rx.next().await {
-            if let AppUiMsg::Dashboard(d) = msg {
-                let _ = ui_tx.unbounded_send(d);
-            }
-        }
-    });
+    Auth(crate::auth::AuthMsg),
 }
 
 pub fn spawn_app_network(

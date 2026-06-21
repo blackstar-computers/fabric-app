@@ -1,5 +1,6 @@
 //! Portal API types — kept in sync with `web_app/src/types.ts`.
 
+mod auth;
 mod fleets;
 mod runspec;
 mod series;
@@ -7,6 +8,10 @@ mod series;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub use auth::{
+    SessionLoginRequest, SessionLoginResponse, TokenExchangeRequest, TokenResponse,
+    AUTH_CALLBACK_SCHEME, SSO_PORTAL_URL,
+};
 pub use fleets::{
     BoxProgressResp, Fleet, FleetsResp, Instance, InstancesResp, Job, JobPod, JobsResp,
     SseJobEvent, TreeNode, TreeResp,

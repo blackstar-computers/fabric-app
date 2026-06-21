@@ -44,6 +44,7 @@ pub struct Dashboard {
     search_query: String,
     last_live_notify: Option<Instant>,
     cmd_tx: Option<mpsc::UnboundedSender<NetworkCommand>>,
+    operator_email: Option<String>,
     selected: Option<RunKey>,
     series: Option<RunSeries>,
     series_loading: bool,
@@ -95,6 +96,7 @@ impl Dashboard {
             search_query: String::new(),
             last_live_notify: None,
             cmd_tx: None,
+            operator_email: None,
             selected: None,
             series: None,
             series_loading: false,
@@ -271,6 +273,10 @@ impl Dashboard {
 
     pub fn attach(&mut self, cmd_tx: mpsc::UnboundedSender<NetworkCommand>) {
         self.cmd_tx = Some(cmd_tx);
+    }
+
+    pub fn set_operator_email(&mut self, email: Option<String>) {
+        self.operator_email = email;
     }
 
     pub fn live(&self) -> bool {
@@ -628,7 +634,12 @@ fn body(view: &Dashboard, cx: &mut Context<Dashboard>, theme: &Theme) -> impl In
                         cx,
                     )),
             )
-            .child(theme.status_bar(footer))
+            .child(theme.status_bar(
+                footer,
+                view.operator_email
+                    .clone()
+                    .map(SharedString::from),
+            ))
             .into_any_element();
     }
 
@@ -639,7 +650,10 @@ fn body(view: &Dashboard, cx: &mut Context<Dashboard>, theme: &Theme) -> impl In
         .flex()
         .flex_col()
         .child(run_list(view, cx, theme, None).flex_1())
-        .child(theme.status_bar(footer))
+        .child(theme.status_bar(
+            footer,
+            view.operator_email.clone().map(SharedString::from),
+        ))
         .into_any_element()
 }
 

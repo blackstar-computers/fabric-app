@@ -10,13 +10,20 @@ const WORD_SIZE: Pixels = px(11.);
 
 /// Star + uppercase wordmark for the app toolbar.
 pub fn brand(theme: &Theme) -> Div {
+    brand_inner(theme).mr(px(10.))
+}
+
+/// Centered brand block for the login screen.
+pub fn brand_header(theme: &Theme) -> Div {
+    brand_inner(theme)
+}
+
+fn brand_inner(theme: &Theme) -> Div {
     div()
         .flex_none()
-        .h_full()
         .flex()
         .items_center()
         .gap(px(6.))
-        .mr(px(10.))
         .child(
             svg()
                 .path(STAR)
