@@ -1633,7 +1633,6 @@ dependencies = [
  "fabric_types",
  "gpui",
  "gpui_platform",
- "tokio",
  "tracing",
  "tracing-subscriber",
 ]

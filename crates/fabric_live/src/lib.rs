@@ -9,7 +9,6 @@ use fabric_api::Client;
 use fabric_types::SseRunEvent;
 use futures::StreamExt;
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 #[derive(Debug, Clone)]
@@ -19,31 +18,13 @@ pub enum LiveMessage {
     RunEvent(SseRunEvent),
 }
 
-pub struct SseClient;
-
-impl SseClient {
-    /// Spawn a background task that maintains an SSE connection and forwards parsed events.
-    pub fn spawn(client: Client) -> mpsc::UnboundedReceiver<LiveMessage> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            loop {
-                if let Err(e) = stream_events(&client, &tx).await {
-                    warn!("sse stream ended: {e:#}");
-                }
-                let _ = tx.send(LiveMessage::Disconnected);
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
-        });
-        rx
-    }
-}
-
-async fn stream_events(client: &Client, tx: &mpsc::UnboundedSender<LiveMessage>) -> Result<()> {
-    let response = client
-        .raw_get("/api/events")
-        .await
-        .context("open sse")?;
-    let _ = tx.send(LiveMessage::Connected);
+/// Read one SSE session until the stream closes. Calls `on_event` synchronously for each message.
+pub async fn stream_events(
+    client: &Client,
+    mut on_event: impl FnMut(LiveMessage),
+) -> Result<()> {
+    let response = client.raw_get("/api/events").await.context("open sse")?;
+    on_event(LiveMessage::Connected);
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
@@ -65,9 +46,7 @@ async fn stream_events(client: &Client, tx: &mpsc::UnboundedSender<LiveMessage>)
                     continue;
                 }
                 match serde_json::from_str::<SseRunEvent>(data) {
-                    Ok(ev) if ev.kind == "run" => {
-                        let _ = tx.send(LiveMessage::RunEvent(ev));
-                    }
+                    Ok(ev) if ev.kind == "run" => on_event(LiveMessage::RunEvent(ev)),
                     Ok(_) => debug!("ignored sse event"),
                     Err(e) => debug!("malformed sse json: {e}"),
                 }
@@ -76,4 +55,18 @@ async fn stream_events(client: &Client, tx: &mpsc::UnboundedSender<LiveMessage>)
     }
 
     Ok(())
+}
+
+/// Maintain SSE with reconnect backoff. Runs until the task is cancelled.
+pub async fn run_sse_loop(
+    client: Client,
+    mut on_event: impl FnMut(LiveMessage),
+) {
+    loop {
+        if let Err(e) = stream_events(&client, &mut on_event).await {
+            warn!("sse stream ended: {e:#}");
+        }
+        on_event(LiveMessage::Disconnected);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
 }

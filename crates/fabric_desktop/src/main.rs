@@ -1,9 +1,5 @@
 use dashboard::Dashboard;
-use fabric_api::{default_portal_url, load_service_token, Client};
-use fabric_live::{LiveMessage, SseClient};
-use gpui::{
-    px, size, App, Bounds, Context, Entity, SharedString, Window, WindowBounds, WindowOptions,
-};
+use gpui::{prelude::*, px, size, App, Bounds, SharedString, WindowBounds, WindowOptions};
 use gpui_platform::application;
 use tracing_subscriber::EnvFilter;
 
@@ -28,55 +24,13 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |window, cx| {
-                let dashboard = cx.new(|cx| Dashboard::new(window, cx));
-                bootstrap(dashboard, cx);
+            |_, cx| {
+                let dashboard = cx.new(|cx| Dashboard::new(cx));
+                dashboard.update(cx, |view, cx| view.start(cx));
                 dashboard
             },
         )
         .expect("open window");
         cx.activate(true);
     });
-}
-
-fn bootstrap(dashboard: Entity<Dashboard>, cx: &mut App) {
-    let Ok(token) = load_service_token() else {
-        dashboard.update(cx, |view, cx| {
-            view.set_error(
-                "No service token — run `fabric auth <token>` or set FABRIC_SERVICE_TOKEN",
-                cx,
-            );
-        });
-        return;
-    };
-
-    let client = Client::new(default_portal_url(), token);
-    let mut live_rx = SseClient::spawn(client.clone());
-
-    let dashboard_live = dashboard.clone();
-    cx.spawn(async move |cx| {
-        while let Some(msg) = live_rx.recv().await {
-            let _ = dashboard_live.update(cx, |view, cx| {
-                view.handle_live(msg, cx);
-            });
-        }
-    })
-    .detach();
-
-    let dashboard_fetch = dashboard.clone();
-    cx.spawn(async move |cx| {
-        match client.fetch_runs_summary().await {
-            Ok(summary) => {
-                let _ = dashboard_fetch.update(cx, |view, cx| {
-                    view.set_summary(summary, cx);
-                });
-            }
-            Err(e) => {
-                let _ = dashboard_fetch.update(cx, |view, cx| {
-                    view.set_error(format!("{e}"), cx);
-                });
-            }
-        }
-    })
-    .detach();
 }

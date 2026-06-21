@@ -18,6 +18,5 @@ fabric_live = { workspace = true }
 fabric_types = { workspace = true }
 gpui = { workspace = true }
 gpui_platform = { workspace = true }
-tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
