@@ -63,4 +63,4 @@ First GPUI build compiles Zed's UI stack from git — expect a long initial `car
 
 ## Related
 
-Control plane and web dashboard live in the main [fabric](https://github.com/blackstar-inc/fabric) repo (`web_app/`, `server/`, `fleet/`).
+Control plane and web dashboard live in the main [fabric](https://github.com/blackstar-computers/fabric) repo (`web_app/`, `server/`, `fleet/`).

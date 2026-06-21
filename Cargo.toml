@@ -11,7 +11,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/blackstar-inc/fabric-app"
+repository = "https://github.com/blackstar-computers/fabric-app"
 
 [workspace.dependencies]
 anyhow = "1"
