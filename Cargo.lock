@@ -1629,12 +1629,21 @@ dependencies = [
  "anyhow",
  "chrono",
  "fabric_api",
+ "fabric_health",
  "fabric_live",
  "fabric_types",
+ "futures",
  "gpui",
  "gpui_platform",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "fabric_health"
+version = "0.1.0"
+dependencies = [
+ "fabric_types",
 ]
 
 [[package]]

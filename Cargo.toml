@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/fabric_types",
+    "crates/fabric_health",
     "crates/fabric_api",
     "crates/fabric_live",
     "crates/fabric_desktop",
@@ -30,5 +31,6 @@ gpui = { git = "https://github.com/zed-industries/zed", tag = "v1.7.2", package 
 gpui_platform = { git = "https://github.com/zed-industries/zed", tag = "v1.7.2", package = "gpui_platform", features = ["font-kit"] }
 
 fabric_types = { path = "crates/fabric_types" }
+fabric_health = { path = "crates/fabric_health" }
 fabric_api = { path = "crates/fabric_api" }
 fabric_live = { path = "crates/fabric_live" }

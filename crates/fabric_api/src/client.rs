@@ -1,6 +1,9 @@
-use fabric_types::{RunsSummary, SERVICE_TOKEN_HEADER};
+use fabric_types::{RunsSummary, RunSeries, SERVICE_TOKEN_HEADER};
 use reqwest::StatusCode;
+use std::time::Duration;
 use thiserror::Error;
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -24,6 +27,7 @@ impl Client {
         Self {
             http: reqwest::Client::builder()
                 .user_agent("fabric-app/0.1")
+                .timeout(REQUEST_TIMEOUT)
                 .build()
                 .expect("reqwest client"),
             base_url: base_url.into().trim_end_matches('/').to_string(),
@@ -41,6 +45,22 @@ impl Client {
 
     pub async fn fetch_runs_summary(&self) -> Result<RunsSummary, ClientError> {
         self.get_json("/api/runs/summary").await
+    }
+
+    /// Lazy per-run series (`web_app/src/api.ts::fetchRunSeries`).
+    pub async fn fetch_run_series(
+        &self,
+        pod: &str,
+        name: &str,
+        max_points: u32,
+    ) -> Result<RunSeries, ClientError> {
+        let path = format!(
+            "/api/runs/series?pod={}&name={}&max={}",
+            url_encode(pod),
+            url_encode(name),
+            max_points
+        );
+        self.get_json(&path).await
     }
 
     pub async fn health_check(&self) -> Result<(), ClientError> {
@@ -92,4 +112,17 @@ impl Client {
         });
         Ok((status, body))
     }
+}
+
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }

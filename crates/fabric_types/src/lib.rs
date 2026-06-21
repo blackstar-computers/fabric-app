@@ -1,7 +1,11 @@
 //! Portal API types — kept in sync with `web_app/src/types.ts`.
 
+mod series;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+pub use series::{nearest_epoch_index, series_latest, RunSeries};
 
 pub const DEFAULT_PORTAL_URL: &str = "https://agents.fabric.blackstar.inc";
 pub const SERVICE_TOKEN_HEADER: &str = "X-Fleet-Token";
@@ -130,6 +134,17 @@ impl Default for SortState {
     }
 }
 
+/// True when a live patch may change ordering for the active sort column.
+pub fn sort_key_changed(old: &RunScalars, new: &RunScalars, column: SortColumn) -> bool {
+    match column {
+        SortColumn::Name => old.name != new.name,
+        SortColumn::Best => old.best != new.best,
+        SortColumn::Epoch => old.last_epoch != new.last_epoch,
+        SortColumn::Status => old.status != new.status,
+        SortColumn::Created => old.created != new.created,
+    }
+}
+
 pub fn sort_runs(runs: &mut [RunScalars], sort: SortState) {
     runs.sort_by(|a, b| {
         let ord = match sort.column {
@@ -177,5 +192,45 @@ mod tests {
         let json = include_str!("../../../fixtures/runs_summary.json");
         let summary: RunsSummary = serde_json::from_str(json).expect("fixture parses");
         assert!(!summary.runs.is_empty());
+    }
+
+    #[test]
+    fn sort_runs_by_best_desc() {
+        let mut runs = vec![
+            RunScalars {
+                name: "a".into(),
+                pod: "n1".into(),
+                best: Some(1.0),
+                ..Default::default()
+            },
+            RunScalars {
+                name: "b".into(),
+                pod: "n2".into(),
+                best: Some(3.0),
+                ..Default::default()
+            },
+        ];
+        sort_runs(
+            &mut runs,
+            SortState {
+                column: SortColumn::Best,
+                direction: SortDirection::Desc,
+            },
+        );
+        assert_eq!(runs[0].name, "b");
+    }
+
+    #[test]
+    fn sort_key_changed_detects_best() {
+        let old = RunScalars {
+            best: Some(1.0),
+            ..Default::default()
+        };
+        let new = RunScalars {
+            best: Some(2.0),
+            ..Default::default()
+        };
+        assert!(sort_key_changed(&old, &new, SortColumn::Best));
+        assert!(!sort_key_changed(&old, &new, SortColumn::Name));
     }
 }

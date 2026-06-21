@@ -11,9 +11,26 @@ pub fn fmt_num(v: Option<f64>, digits: usize) -> String {
 
 pub fn fmt_epoch(current: Option<i64>, total: Option<i64>) -> String {
     match (current, total) {
-        (Some(c), Some(t)) if t > 0 => format!("{c}/{t}"),
-        (Some(c), _) => c.to_string(),
+        (Some(c), Some(t)) if t > 0 => format!("{}/{}", display_epoch(c), t),
+        (Some(c), _) => display_epoch(c).to_string(),
         _ => "—".into(),
+    }
+}
+
+/// Internal epoch indices are 0-based (0..n-1); the UI shows 1..n for readability.
+pub fn display_epoch(epoch: i64) -> i64 {
+    epoch.saturating_add(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_epoch_one_based() {
+        assert_eq!(fmt_epoch(Some(0), Some(50)), "1/50");
+        assert_eq!(fmt_epoch(Some(49), Some(50)), "50/50");
+        assert_eq!(fmt_epoch(Some(4), None), "5");
     }
 }
 
@@ -27,7 +44,7 @@ pub fn fmt_ago(ts: Option<f64>) -> String {
         .single()
         .unwrap_or_else(Utc::now);
     let local: DateTime<Local> = dt.into();
-    local.format("%b %d %H:%M").to_string()
+    local.format("%Y-%m-%d %H:%M").to_string()
 }
 
 pub fn fmt_eta(secs: Option<f64>) -> String {

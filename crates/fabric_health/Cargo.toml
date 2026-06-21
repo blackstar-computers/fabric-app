@@ -1,0 +1,10 @@
+[package]
+name = "fabric_health"
+description = "Pure health heuristics + run classification (mirrors web_app/src/lib/health.ts)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fabric_types = { workspace = true }

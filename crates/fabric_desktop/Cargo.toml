@@ -13,7 +13,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
+futures = { workspace = true }
 fabric_api = { workspace = true }
+fabric_health = { workspace = true }
 fabric_live = { workspace = true }
 fabric_types = { workspace = true }
 gpui = { workspace = true }
