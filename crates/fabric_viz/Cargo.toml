@@ -1,6 +1,6 @@
 [package]
-name = "fabric_health"
-description = "Pure health heuristics + run classification (mirrors web_app/src/lib/health.ts)"
+name = "fabric_viz"
+description = "Pure-Rust visualizer helpers (quant8 decode, FAB1 parse, colormap, eligibility)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,4 +10,6 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+base64 = "0.22"
 fabric_types = { workspace = true }
+serde_json = { workspace = true }

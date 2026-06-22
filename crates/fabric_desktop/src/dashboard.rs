@@ -44,6 +44,7 @@ pub struct Dashboard {
     search_query: String,
     last_live_notify: Option<Instant>,
     cmd_tx: Option<mpsc::UnboundedSender<NetworkCommand>>,
+    shell: Option<Entity<crate::app::FabricApp>>,
     operator_email: Option<String>,
     selected: Option<RunKey>,
     series: Option<RunSeries>,
@@ -62,7 +63,7 @@ pub struct Dashboard {
 
 impl Dashboard {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| SearchInput::new(cx));
+        let search = cx.new(SearchInput::new);
         cx.observe(&search, move |this, search, cx| {
             let q = search.read(cx).query().to_string();
             if this.search_query != q {
@@ -96,6 +97,7 @@ impl Dashboard {
             search_query: String::new(),
             last_live_notify: None,
             cmd_tx: None,
+            shell: None,
             operator_email: None,
             selected: None,
             series: None,
@@ -275,8 +277,24 @@ impl Dashboard {
         self.cmd_tx = Some(cmd_tx);
     }
 
+    pub fn detach(&mut self) {
+        self.cmd_tx = None;
+        self.live = false;
+        self.refreshing = false;
+    }
+
     pub fn set_operator_email(&mut self, email: Option<String>) {
         self.operator_email = email;
+    }
+
+    pub fn set_shell(&mut self, shell: Entity<crate::app::FabricApp>) {
+        self.shell = Some(shell);
+    }
+
+    pub fn open_topology(&self, fleet: String, pod: String, name: String, cx: &mut Context<Self>) {
+        if let Some(shell) = &self.shell {
+            shell.update(cx, |app, cx| app.open_topology_for_run(fleet, pod, name, cx));
+        }
     }
 
     pub fn live(&self) -> bool {
@@ -429,7 +447,9 @@ impl Dashboard {
         match msg {
             LiveMessage::Connected => self.live = true,
             LiveMessage::Disconnected => self.live = false,
-            LiveMessage::JobEvent(_) => {}
+            // Job transitions (launch, running, done) — refetch summary so new runs appear
+            // immediately, matching web_app/src/lib/live.ts.
+            LiveMessage::JobEvent(_) => self.refresh(cx),
             LiveMessage::RunEvent(ev) => {
                 let run_key = (ev.pod.clone(), ev.run.clone());
                 if !ev.point.is_empty() {
@@ -454,9 +474,11 @@ impl Dashboard {
                         );
                     }
                 }
-                if let Some(summary) = self.summary.as_mut() {
-                    if ev.is_run_v2() {
+                if ev.is_run_v2() {
+                    let mut patched = false;
+                    if let Some(summary) = self.summary.as_mut() {
                         if patch_summary(summary, &ev) {
+                            patched = true;
                             let pod = ev.pod.clone();
                             let name = ev.run.clone();
                             if let Some(src) = summary
@@ -467,12 +489,27 @@ impl Dashboard {
                             {
                                 self.apply_run_patch(&pod, &name, src);
                             }
-                        } else {
-                            self.rebuild_runs();
+                        }
+                    }
+                    if !patched {
+                        // Brand-new run not in cache yet — refetch like the web dashboard.
+                        self.refresh(cx);
+                    }
+                } else {
+                    // v1 events carry no deltas; invalidate summary (and open series if selected).
+                    self.refresh(cx);
+                    if self.selected.as_ref() == Some(&run_key) {
+                        if let Some(tx) = &self.cmd_tx {
+                            let _ = tx.unbounded_send(NetworkCommand::FetchSeries {
+                                pod: ev.pod,
+                                name: ev.run,
+                            });
                         }
                     }
                 }
             }
+            // Box/fleet/node deltas are handled by the fleets view, not the dashboard.
+            LiveMessage::BoxEvent(_) | LiveMessage::FleetEvent(_) | LiveMessage::NodeEvent(_) => {}
         }
         self.notify_live(cx, force);
     }
@@ -494,7 +531,9 @@ impl Render for Dashboard {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
         div()
-            .size_full()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .flex()
             .flex_col()
             .child(overview_toolbar(self, cx, &theme))
@@ -601,10 +640,23 @@ fn body(view: &Dashboard, cx: &mut Context<Dashboard>, theme: &Theme) -> impl In
 
     if let Some(run) = view.selected_run() {
         let run = run.clone();
+        let fleet = run.fleet.clone();
+        let pod = run.pod.clone();
+        let name = run.name.clone();
+        let show_topology = topology_eligible(&run);
         let back = theme
             .title_button(" ← BACK ", false)
             .id("detail-back")
             .on_click(cx.listener(|this, _, _, cx| this.clear_selection(cx)));
+
+        let topology = show_topology.then(|| {
+            theme
+                .title_button(" TOPOLOGY ", false)
+                .id("detail-topology")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_topology(fleet.clone(), pod.clone(), name.clone(), cx);
+                }))
+        });
 
         let split_list = run_list(view, cx, theme, Some(columns::RUN_TABLE_MIN_W));
 
@@ -631,6 +683,7 @@ fn body(view: &Dashboard, cx: &mut Context<Dashboard>, theme: &Theme) -> impl In
                         view.series_loading,
                         view.series_error.as_ref(),
                         back,
+                        topology,
                         cx,
                     )),
             )
@@ -805,7 +858,7 @@ fn run_row(
         theme.panel_edge
     } else if hidden {
         theme.row_b
-    } else if ix % 2 == 0 {
+    } else if ix.is_multiple_of(2) {
         theme.row_a
     } else {
         theme.row_b
@@ -868,4 +921,19 @@ fn run_row(
             }
         }))
         .child(theme.col_row(row_cells))
+}
+
+fn topology_eligible(run: &RunScalars) -> bool {
+    if run
+        .runspec
+        .as_ref()
+        .and_then(|rs| rs.ui_capabilities.as_ref())
+        .is_some_and(|u| u.topology_link || u.interactive_viz)
+    {
+        return true;
+    }
+    run.runspec
+        .as_ref()
+        .and_then(|rs| rs.substrate_kind.as_deref())
+        == Some("canvas")
 }

@@ -1,6 +1,7 @@
 use fabric_types::{
-    BoxProgressResp, FleetsResp, InstancesResp, JobsResp, RunSeries, RunsSummary,
-    SERVICE_TOKEN_HEADER, TreeResp,
+    BoxProgressResp, CheckpointsResp, FleetsResp, GpuSearchResp, InstancesResp, JobsResp,
+    RunSeries, RunsSummary, SERVICE_TOKEN_HEADER, TopoManifestResp, TreeResp, VizGalleryResp,
+    VizLoadMeta, VizOpenRequest, VizOpenResp, VizStatusResp, VizStepRequest,
 };
 use reqwest::StatusCode;
 use std::time::Duration;
@@ -51,9 +52,26 @@ impl ClientError {
     }
 }
 
+fn api_error(status: StatusCode, message: String) -> ClientError {
+    if status == StatusCode::UNAUTHORIZED {
+        ClientError::Unauthorized
+    } else {
+        ClientError::Api { status, message }
+    }
+}
+
+fn build_http(timeout: Option<Duration>) -> Result<reqwest::Client, ClientError> {
+    let mut builder = reqwest::Client::builder().user_agent("fabric-app/0.1");
+    if let Some(t) = timeout {
+        builder = builder.timeout(t);
+    }
+    builder.build().map_err(ClientError::Http)
+}
+
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
+    sse: reqwest::Client,
     base_url: String,
     token: String,
     auth_kind: AuthKind,
@@ -61,28 +79,36 @@ pub struct Client {
 
 impl Client {
     pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> Self {
-        Self::with_auth(base_url, token, AuthKind::ServiceToken)
+        Self::try_with_auth(base_url, token, AuthKind::ServiceToken).expect("reqwest client")
     }
 
     pub fn with_session(base_url: impl Into<String>, access_token: impl Into<String>) -> Self {
-        Self::with_auth(base_url, access_token, AuthKind::SessionBearer)
+        Self::try_with_auth(base_url, access_token, AuthKind::SessionBearer).expect("reqwest client")
     }
 
-    fn with_auth(
+    pub fn try_new(base_url: impl Into<String>, token: impl Into<String>) -> Result<Self, ClientError> {
+        Self::try_with_auth(base_url, token, AuthKind::ServiceToken)
+    }
+
+    pub fn try_with_session(
+        base_url: impl Into<String>,
+        access_token: impl Into<String>,
+    ) -> Result<Self, ClientError> {
+        Self::try_with_auth(base_url, access_token, AuthKind::SessionBearer)
+    }
+
+    fn try_with_auth(
         base_url: impl Into<String>,
         token: impl Into<String>,
         auth_kind: AuthKind,
-    ) -> Self {
-        Self {
-            http: reqwest::Client::builder()
-                .user_agent("fabric-app/0.1")
-                .timeout(REQUEST_TIMEOUT)
-                .build()
-                .expect("reqwest client"),
+    ) -> Result<Self, ClientError> {
+        Ok(Self {
+            http: build_http(Some(REQUEST_TIMEOUT))?,
+            sse: build_http(None)?,
             base_url: base_url.into().trim_end_matches('/').to_string(),
             token: token.into(),
             auth_kind,
-        }
+        })
     }
 
     pub fn base_url(&self) -> &str {
@@ -134,6 +160,11 @@ impl Client {
         self.get_json("/api/boxes/instances").await
     }
 
+    pub async fn fetch_gpu_search(&self, num_gpus: u32) -> Result<GpuSearchResp, ClientError> {
+        let path = format!("/api/fleets/search?num_gpus={num_gpus}");
+        self.get_json(&path).await
+    }
+
     /// Provisioning progress for a GPU box (`web_app` assign/rent flow).
     pub async fn fetch_box_progress(&self, contract: &str) -> Result<BoxProgressResp, ClientError> {
         let path = format!(
@@ -166,6 +197,101 @@ impl Client {
         self.get_json(&path).await
     }
 
+    pub async fn fetch_checkpoints(&self, fleet: &str) -> Result<CheckpointsResp, ClientError> {
+        let path = if fleet.is_empty() {
+            "/api/checkpoints".to_string()
+        } else {
+            format!("/api/checkpoints?fleet={}", url_encode(fleet))
+        };
+        self.get_json(&path).await
+    }
+
+    pub async fn fetch_topo_manifest(&self) -> Result<TopoManifestResp, ClientError> {
+        self.get_json("/api/topology/manifest").await
+    }
+
+    /// Raw GET (e.g. `/api/topology/file?run=…&file=…` for `.fab` topology blobs).
+    pub async fn fetch_bytes(&self, path: &str) -> Result<Vec<u8>, ClientError> {
+        self.get_bytes(path).await
+    }
+
+    /// Kick off background checkpoint sync + viewer warm (`web_app/src/api.ts::vizOpen`).
+    pub async fn viz_open(&self, body: &VizOpenRequest) -> Result<VizOpenResp, ClientError> {
+        let mut json = serde_json::to_value(body)?;
+        if let Some(obj) = json.as_object_mut() {
+            obj.insert("background".into(), serde_json::Value::Bool(true));
+        }
+        self.post_json("/api/viz/open", json).await
+    }
+
+    pub async fn viz_status(&self, ckpt: &str) -> Result<VizStatusResp, ClientError> {
+        let path = if ckpt.is_empty() {
+            "/api/viz/status".to_string()
+        } else {
+            format!("/api/viz/status?ckpt={}", url_encode(ckpt))
+        };
+        self.get_json(&path).await
+    }
+
+    /// Loaded-model meta from the proxied viewer daemon (`fetchVizState`).
+    pub async fn viz_state(&self) -> Result<VizLoadMeta, ClientError> {
+        self.get_json("/viz/default/api/state").await
+    }
+
+    pub async fn viz_step(&self, body: &VizStepRequest) -> Result<serde_json::Value, ClientError> {
+        let json = serde_json::to_value(body)?;
+        self.post_json("/viz/default/api/step", json).await
+    }
+
+    /// Zero the substrate activation state (`viewer.py` `Session.reset()`). Recon rollouts
+    /// accumulate `self.a` across `/api/step` calls; reset before each RUN so tick 0 reflects
+    /// a fresh drive injection for the newly selected input.
+    pub async fn viz_reset(&self) -> Result<serde_json::Value, ClientError> {
+        self.post_json("/viz/default/api/reset", serde_json::json!({}))
+            .await
+    }
+
+    /// Paginated dataset thumbnails from the proxied viewer daemon — backs the input gallery
+    /// (`InputPicker.tsx` grid). `size` is the requested thumbnail edge in pixels.
+    pub async fn fetch_viz_gallery(
+        &self,
+        dataset: &str,
+        start: u32,
+        count: u32,
+        size: u32,
+    ) -> Result<VizGalleryResp, ClientError> {
+        let path = format!(
+            "/viz/default/api/gallery?dataset={}&start={}&count={}&size={}",
+            url_encode(dataset),
+            start,
+            count,
+            size
+        );
+        self.get_json(&path).await
+    }
+
+    /// Path of a single dataset image on the proxied viewer daemon. Path-only helper so callers
+    /// can build a URL or feed it to [`Self::fetch_viz_image_bytes`].
+    pub fn viz_image_path(&self, dataset: &str, idx: u32, size: u32) -> String {
+        format!(
+            "/viz/default/api/image?idx={}&dataset={}&size={}",
+            idx,
+            url_encode(dataset),
+            size
+        )
+    }
+
+    /// Raw PNG bytes for a single dataset image (`/viz/default/api/image?idx=&dataset=&size=`).
+    pub async fn fetch_viz_image_bytes(
+        &self,
+        dataset: &str,
+        idx: u32,
+        size: u32,
+    ) -> Result<Vec<u8>, ClientError> {
+        let path = self.viz_image_path(dataset, idx, size);
+        self.get_bytes(&path).await
+    }
+
     pub async fn fleet_action(
         &self,
         action: &str,
@@ -189,14 +315,18 @@ impl Client {
     /// Raw GET for streaming endpoints (SSE). Caller owns the response body stream.
     pub async fn raw_get(&self, path: &str) -> Result<reqwest::Response, ClientError> {
         let url = format!("{}{}", self.base_url, path);
-        Ok(self
+        let response = self
             .attach_auth(
-                self.http
+                self.sse
                     .get(&url)
                     .header("Accept", "text/event-stream"),
             )
             .send()
-            .await?)
+            .await?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            return Err(ClientError::Unauthorized);
+        }
+        Ok(response)
     }
 
     async fn post_json<T: serde::de::DeserializeOwned>(
@@ -225,7 +355,7 @@ impl Client {
                 .and_then(|v| v.as_str())
                 .unwrap_or("request failed")
                 .to_string();
-            return Err(ClientError::Api { status, message });
+            return Err(api_error(status, message));
         }
         Ok(serde_json::from_value(body)?)
     }
@@ -238,7 +368,7 @@ impl Client {
                 .and_then(|v| v.as_str())
                 .unwrap_or("request failed")
                 .to_string();
-            return Err(ClientError::Api { status, message });
+            return Err(api_error(status, message));
         }
         Ok(serde_json::from_value(body)?)
     }
@@ -254,10 +384,36 @@ impl Client {
             .send()
             .await?;
         let status = response.status();
+        if status == StatusCode::UNAUTHORIZED {
+            return Err(ClientError::Unauthorized);
+        }
         let body: serde_json::Value = response.json().await.unwrap_or_else(|_| {
             serde_json::json!({ "error": "non-JSON response from portal" })
         });
         Ok((status, body))
+    }
+
+    async fn get_bytes(&self, path: &str) -> Result<Vec<u8>, ClientError> {
+        let url = format!("{}{}", self.base_url, path);
+        let response = self.attach_auth(self.http.get(&url)).send().await?;
+        let status = response.status();
+        if status == StatusCode::UNAUTHORIZED {
+            return Err(ClientError::Unauthorized);
+        }
+        if !status.is_success() {
+            let message = response
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|body| {
+                    body.get("error")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| format!("request failed ({status})"));
+            return Err(api_error(status, message));
+        }
+        Ok(response.bytes().await?.to_vec())
     }
 }
 
@@ -272,4 +428,34 @@ fn url_encode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unauthorized_detection() {
+        assert!(ClientError::Unauthorized.is_unauthorized());
+        assert!(
+            ClientError::Api {
+                status: StatusCode::UNAUTHORIZED,
+                message: "nope".into(),
+            }
+            .is_unauthorized()
+        );
+        assert!(
+            !ClientError::Api {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "boom".into(),
+            }
+            .is_unauthorized()
+        );
+    }
+
+    #[test]
+    fn api_error_maps_401_to_unauthorized() {
+        let err = api_error(StatusCode::UNAUTHORIZED, "Google SSO required".into());
+        assert!(matches!(err, ClientError::Unauthorized));
+    }
 }

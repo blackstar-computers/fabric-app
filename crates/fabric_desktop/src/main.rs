@@ -27,6 +27,7 @@ mod overview;
 mod search_input;
 mod sparkline;
 mod theme;
+mod topology;
 
 fn main() {
     tracing_subscriber::fmt()

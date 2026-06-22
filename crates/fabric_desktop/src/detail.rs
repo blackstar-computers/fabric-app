@@ -22,6 +22,7 @@ pub fn render_detail(
     series_loading: bool,
     series_error: Option<&SharedString>,
     back: impl IntoElement,
+    topology: Option<impl IntoElement>,
     cx: &mut Context<Dashboard>,
 ) -> Div {
     let signals = derive_signals(run, series);
@@ -36,7 +37,7 @@ pub fn render_detail(
         .flex_col()
         .border_l_1()
         .border_color(theme.border)
-        .child(command_bar(theme, run, series, tone, back))
+        .child(command_bar(theme, run, series, tone, back, topology))
         .child(health_strip(theme, &signals))
         .child(metric_wall(
             theme,
@@ -55,6 +56,7 @@ fn command_bar(
     series: Option<&RunSeries>,
     tone: Tone,
     back: impl IntoElement,
+    topology: Option<impl IntoElement>,
 ) -> Div {
     let lm = is_lm_run(run);
     let loss = series
@@ -85,6 +87,7 @@ fn command_bar(
                 .px(px(8.))
                 .py(px(6.))
                 .child(back)
+                .when_some(topology, |row, btn| row.child(btn))
                 .child(
                     div()
                         .flex_1()

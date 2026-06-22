@@ -216,7 +216,7 @@ fn rel_trend(values: &[f64], win: usize) -> Option<f64> {
 
 fn fmt_g(v: f64) -> String {
     let a = v.abs();
-    if a != 0.0 && (a < 1e-3 || a >= 1e4) {
+    if a != 0.0 && !(1e-3..1e4).contains(&a) {
         format!("{v:.1e}")
     } else if a < 1.0 {
         format!("{v:.3}")

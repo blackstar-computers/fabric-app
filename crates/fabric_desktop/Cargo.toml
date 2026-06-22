@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "fabric-app"
 path = "src/main.rs"
@@ -18,9 +21,15 @@ fabric_api = { workspace = true }
 fabric_health = { workspace = true }
 fabric_live = { workspace = true }
 fabric_types = { workspace = true }
+fabric_viz = { workspace = true }
 gpui = { workspace = true }
 gpui_platform = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

@@ -132,11 +132,7 @@ pub fn render_cell(
     match col.id {
         "eye" => div().w(EYE_COL_W),
         "status" => theme.status_block(status_label(run.status.as_deref())),
-        "group" => theme.cell_fixed(
-            GROUP_COL_W,
-            if dim { theme.text_dim } else { theme.text_dim },
-            group_display(run),
-        ),
+        "group" => theme.cell_fixed(GROUP_COL_W, theme.text_dim, group_display(run)),
         "name" => theme.cell_flex(
             if dim { theme.text_dim } else { theme.link },
             run.name.clone(),
@@ -151,14 +147,10 @@ pub fn render_cell(
             .child(sparkline_cell(theme, spark_values, spark_color, dim)),
         "pod" => theme.cell_fixed(
             px(100.),
-            if dim { theme.text_dim } else { theme.text_dim },
+            theme.text_dim,
             run.pod.clone(),
         ),
-        "fleet" => theme.cell_fixed(
-            px(88.),
-            if dim { theme.text_dim } else { theme.text_dim },
-            run.fleet.clone(),
-        ),
+        "fleet" => theme.cell_fixed(px(88.), theme.text_dim, run.fleet.clone()),
         "best" => theme.cell_fixed(
             px(72.),
             if dim { theme.text_dim } else { theme.data },

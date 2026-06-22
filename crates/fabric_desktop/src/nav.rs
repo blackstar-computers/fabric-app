@@ -48,7 +48,11 @@ pub fn app_toolbar(
 }
 
 pub fn mode_tabs(cx: &mut Context<FabricApp>, theme: &Theme, mode: AppMode) -> Div {
-    let tabs = [(AppMode::Runs, "RUNS"), (AppMode::Fleets, "FLEETS")];
+    let tabs = [
+        (AppMode::Runs, "RUNS"),
+        (AppMode::Fleets, "FLEETS"),
+        (AppMode::Topology, "TOPOLOGY"),
+    ];
     let mut row = div().flex().h_full().items_stretch().gap(TAB_GAP);
     for (tab_mode, label) in tabs {
         let active = mode == tab_mode;

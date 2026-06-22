@@ -39,6 +39,64 @@ impl SessionBundle {
             saved.to_string()
         }
     }
+
+    pub fn api_portal_url_for_sso_host(sso_host: &str) -> String {
+        Self {
+            portal_url: sso_host.trim_end_matches('/').to_string(),
+            ..Default::default()
+        }
+        .api_portal_url()
+    }
+}
+
+/// True when a saved session's expiry is in the past.
+pub fn session_expired(expires_at: Option<i64>) -> bool {
+    let Some(exp) = expires_at else {
+        return false;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    exp <= now
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fabric_types::SSO_PORTAL_URL;
+
+    #[test]
+    fn sso_url_rejects_agents_host() {
+        std::env::set_var(
+            "FABRIC_SSO_URL",
+            "https://agents.fabric.blackstar.inc",
+        );
+        assert_eq!(
+            SessionBundle::sso_portal_url(),
+            SSO_PORTAL_URL.trim_end_matches('/')
+        );
+        std::env::remove_var("FABRIC_SSO_URL");
+    }
+
+    #[test]
+    fn api_portal_url_removes_sso_host() {
+        let bundle = SessionBundle {
+            portal_url: SSO_PORTAL_URL.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            bundle.api_portal_url(),
+            "https://agents.fabric.blackstar.inc"
+        );
+    }
+
+    #[test]
+    fn session_expiry() {
+        assert!(!session_expired(None));
+        assert!(!session_expired(Some(i64::MAX)));
+        assert!(session_expired(Some(1)));
+    }
 }
 
 #[derive(Debug, Error)]

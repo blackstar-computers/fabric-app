@@ -33,6 +33,12 @@ impl LoginView {
         cx.notify();
     }
 
+    pub fn reset(&mut self, cx: &mut Context<Self>) {
+        self.busy = false;
+        self.error = None;
+        cx.notify();
+    }
+
     fn sign_in_google(&mut self, cx: &mut Context<Self>) {
         if self.busy {
             return;

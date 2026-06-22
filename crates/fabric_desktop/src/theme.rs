@@ -268,7 +268,7 @@ impl Theme {
     }
 
     /// Kind-filter segment pill in the overview toolbar.
-    pub fn filter_pill(&self, active: bool, label: &'static str) -> Div {
+    pub fn filter_pill(&self, active: bool, label: impl Into<SharedString>) -> Div {
         self.pill()
             .border_color(if active { self.amber } else { self.border })
             .text_color(if active { self.amber } else { self.text_dim })

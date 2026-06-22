@@ -22,18 +22,6 @@ pub fn display_epoch(epoch: i64) -> i64 {
     epoch.saturating_add(1)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fmt_epoch_one_based() {
-        assert_eq!(fmt_epoch(Some(0), Some(50)), "1/50");
-        assert_eq!(fmt_epoch(Some(49), Some(50)), "50/50");
-        assert_eq!(fmt_epoch(Some(4), None), "5");
-    }
-}
-
 pub fn fmt_ago(ts: Option<f64>) -> String {
     let Some(ts) = ts else {
         return "—".into();
@@ -71,5 +59,17 @@ pub fn status_label(status: Option<&str>) -> &'static str {
             let _ = other;
             "unknown"
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_epoch_one_based() {
+        assert_eq!(fmt_epoch(Some(0), Some(50)), "1/50");
+        assert_eq!(fmt_epoch(Some(49), Some(50)), "50/50");
+        assert_eq!(fmt_epoch(Some(4), None), "5");
     }
 }

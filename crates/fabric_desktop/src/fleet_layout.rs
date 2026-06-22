@@ -1,18 +1,17 @@
-//! Relay-tree layout — assigns each node an (x, y) in content space.
+//! Relay-tree layout — port of `web_app/src/routes/Fleets.tsx` `layoutTree()`.
 //!
-//! Coordinates are content-local pixels (pre-scale). Cards are centred on the
-//! subtree they root; [`OFFX`]/[`OFFY`] add the outer gutter so nothing clips
-//! the viewport edge. The board and edge painter share these constants so DIV
-//! node cards and the Bézier links behind them stay pixel-aligned.
+//! Constants match the web client's edge anchoring (`CARD_W`/`CARD_H`/`XS`/`YS`/`GUTTER`)
+//! so parent→child Bézier links meet the card centers exactly.
 
 use fabric_types::TreeNode;
 use std::collections::{HashMap, HashSet};
 
-pub const CARD_W: f32 = 168.;
-pub const CARD_H: f32 = 88.;
-pub const XS: f32 = 196.;
-pub const YS: f32 = 132.;
-pub const GUTTER: f32 = 18.;
+// Must stay in sync with web_app/src/routes/Fleets.tsx (lines ~191–197).
+pub const CARD_W: f32 = 152.;
+pub const CARD_H: f32 = 84.;
+pub const XS: f32 = 174.;
+pub const YS: f32 = 128.;
+pub const GUTTER: f32 = 14.;
 pub const OFFX: f32 = CARD_W / 2. + GUTTER;
 pub const OFFY: f32 = GUTTER;
 
@@ -103,7 +102,34 @@ pub fn layout_tree(nodes: &[TreeNode], root: Option<&str>) -> TreeLayout {
 
     let leaves = leaf.max(1);
     let rows = max_depth + 1;
-    TreeLayout { pos, leaves, rows }
+    let mut layout = TreeLayout { pos, leaves, rows };
+    center_layout(&mut layout);
+    layout
+}
+
+/// Shift every node so the card bounding box sits centred in [`content_size`].
+fn center_layout(layout: &mut TreeLayout) {
+    if layout.pos.is_empty() {
+        return;
+    }
+    let mut left = f32::INFINITY;
+    let mut right = f32::NEG_INFINITY;
+    let mut top = f32::INFINITY;
+    let mut bottom = f32::NEG_INFINITY;
+    for p in layout.pos.values() {
+        let (lx, ly) = card_origin(p);
+        left = left.min(lx);
+        right = right.max(lx + CARD_W);
+        top = top.min(ly);
+        bottom = bottom.max(ly + CARD_H);
+    }
+    let (cw, ch) = content_size(layout);
+    let shift_x = (cw - (right - left)) / 2. - left;
+    let shift_y = (ch - (bottom - top)) / 2. - top;
+    for p in layout.pos.values_mut() {
+        p.x += shift_x;
+        p.y += shift_y;
+    }
 }
 
 /// Full content bounds (pre-scale) needed to show every card plus gutters.
@@ -116,4 +142,46 @@ pub fn content_size(layout: &TreeLayout) -> (f32, f32) {
 /// Top-left corner of a card in content space (pre-scale).
 pub fn card_origin(pos: &NodePos) -> (f32, f32) {
     (pos.x + GUTTER, pos.y + OFFY)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fabric_types::TreeNode;
+
+    fn node(tag: &str, parent: Option<&str>, children: &[&str]) -> TreeNode {
+        TreeNode {
+            tag: tag.into(),
+            parent: parent.map(str::to_string),
+            children: children.iter().map(|c| (*c).to_string()).collect(),
+            up: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn layout_tree_centers_in_content_box() {
+        let nodes = vec![
+            node("r", None, &["a", "b"]),
+            node("a", Some("r"), &[]),
+            node("b", Some("r"), &[]),
+        ];
+        let layout = layout_tree(&nodes, Some("r"));
+        let (cw, ch) = content_size(&layout);
+        let mut left = f32::INFINITY;
+        let mut right = f32::NEG_INFINITY;
+        let mut top = f32::INFINITY;
+        let mut bottom = f32::NEG_INFINITY;
+        for p in layout.pos.values() {
+            let (lx, ly) = card_origin(p);
+            left = left.min(lx);
+            right = right.max(lx + CARD_W);
+            top = top.min(ly);
+            bottom = bottom.max(ly + CARD_H);
+        }
+        let bbox_w = right - left;
+        let bbox_h = bottom - top;
+        assert!((left - (cw - bbox_w) / 2.).abs() < 0.01);
+        assert!((top - (ch - bbox_h) / 2.).abs() < 0.01);
+    }
 }

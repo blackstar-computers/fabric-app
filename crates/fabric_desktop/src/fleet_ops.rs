@@ -7,7 +7,7 @@
 
 use crate::fleets::{status_dot_color, BoxDrag, FleetsView};
 use crate::theme::Theme;
-use fabric_types::{Instance, Job, TreeNode};
+use fabric_types::{GpuSearchGroup, Instance, Job, TreeNode};
 use gpui::{div, prelude::*, px, Context, MouseButton, Render, SharedString, Window};
 
 const RAIL_W: f32 = 224.;
@@ -101,7 +101,11 @@ fn box_chip(
         .provision_state
         .as_deref()
         .or(inst.status.as_deref())
-        .filter(|s| !s.is_empty() && *s != "ready");
+        .filter(|s| !s.is_empty() && *s != "ready" && *s != "untracked" && *s != "assigned");
+    let draggable = inst.assignable.unwrap_or(false) && !matches!(
+        provision,
+        Some("booting" | "provisioning" | "creating")
+    );
     let id = inst.id_str();
     let drag = BoxDrag {
         contract: id.clone(),
@@ -128,10 +132,12 @@ fn box_chip(
             let id = id.clone();
             move |this, _, _, cx| this.select_box(id.clone(), cx)
         }))
-        .on_drag(drag, move |d: &BoxDrag, _pos, _window, cx| {
-            let label = d.label.clone();
-            let theme = drag_theme.clone();
-            cx.new(|_| BoxDragPreview { label, theme })
+        .when(draggable, |el| {
+            el.on_drag(drag, move |d: &BoxDrag, _pos, _window, cx| {
+                let label = d.label.clone();
+                let theme = drag_theme.clone();
+                cx.new(|_| BoxDragPreview { label, theme })
+            })
         })
         .child(
             div()
@@ -165,6 +171,330 @@ fn box_chip(
                     .child(state),
             )
         })
+}
+
+fn assigned_row(
+    theme: &Theme,
+    inst: &Instance,
+    cx: &mut Context<FleetsView>,
+) -> impl IntoElement {
+    let label = inst
+        .pod_name
+        .clone()
+        .or_else(|| inst.label.clone())
+        .unwrap_or_else(|| inst.id_str());
+    let fleet = inst
+        .fleet_name
+        .clone()
+        .or_else(|| inst.fleet_id.clone())
+        .unwrap_or_else(|| "—".into());
+    let state = inst
+        .provision_state
+        .as_deref()
+        .or(inst.status.as_deref())
+        .filter(|s| !s.is_empty() && *s != "assigned" && *s != "ready" && *s != "untracked");
+    let in_flight = state.is_some();
+    let id = inst.id_str();
+
+    div()
+        .id(SharedString::from(format!("assigned-{id}")))
+        .px(px(6.))
+        .py(px(3.))
+        .flex()
+        .items_center()
+        .gap_1()
+        .border_b_1()
+        .border_color(theme.border)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(10.))
+                        .text_color(theme.data)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(9.))
+                        .text_color(theme.text_dim)
+                        .child(fleet),
+                )
+                .when_some(state.map(str::to_string), |col, s| {
+                    col.child(
+                        div()
+                            .truncate()
+                            .text_size(px(9.))
+                            .text_color(status_dot_color(theme, &s))
+                            .child(s),
+                    )
+                }),
+        )
+        .when(!in_flight, |el| {
+            el.child(
+                theme
+                    .title_button("↩", false)
+                    .id(SharedString::from(format!("unassign-{id}")))
+                    .on_click(cx.listener({
+                        let id = id.clone();
+                        move |this, _, _, cx| this.unassign_box(&id, cx)
+                    })),
+            )
+        })
+        .when(!in_flight, |el| {
+            el.child(
+                theme
+                    .title_button("✕", false)
+                    .id(SharedString::from(format!("destroy-{id}")))
+                    .on_click(cx.listener({
+                        let id = id.clone();
+                        move |this, _, _, cx| this.destroy_box(&id, cx)
+                    })),
+            )
+        })
+}
+
+fn gpu_offer_row(
+    theme: &Theme,
+    offer: &GpuSearchGroup,
+    selected: bool,
+    cx: &mut Context<FleetsView>,
+) -> impl IntoElement {
+    let filter = offer.gpu_filter.clone();
+    let price = offer
+        .dph_med
+        .map(|p| format!(" ${p:.2}/hr"))
+        .unwrap_or_default();
+    let label = format!("{}{price}", offer.gpu_name);
+
+    div()
+        .id(SharedString::from(format!("gpu-{filter}")))
+        .px(px(6.))
+        .py(px(3.))
+        .truncate()
+        .text_size(px(10.))
+        .text_color(if selected { theme.amber } else { theme.text })
+        .bg(if selected { theme.panel_edge } else { theme.row_a })
+        .border_b_1()
+        .border_color(theme.border)
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.panel_edge))
+        .on_click(cx.listener({
+            let filter = filter.clone();
+            move |this, _, _, cx| this.select_rent_gpu(filter.clone(), cx)
+        }))
+        .child(label)
+}
+
+fn rent_panel(view: &FleetsView, theme: &Theme, cx: &mut Context<FleetsView>) -> impl IntoElement {
+    let loading = view.gpu_search_loading;
+    let offers = view
+        .gpu_offers
+        .as_ref()
+        .map(|r| r.groups.as_slice())
+        .unwrap_or(&[]);
+    let selected = view.rent_gpu_filter.clone();
+    let gpus = view.rent_gpus_per_box;
+    let count = view.rent_count;
+    let disk = view.rent_disk_gb;
+    let err = view
+        .gpu_offers
+        .as_ref()
+        .and_then(|r| r.error.clone());
+    let can_rent = !selected.trim().is_empty() && !loading;
+
+    let offer_rows: Vec<_> = offers
+        .iter()
+        .map(|o| {
+            let sel = o.gpu_filter == selected;
+            gpu_offer_row(theme, o, sel, cx).into_any_element()
+        })
+        .collect();
+
+    div()
+        .flex_none()
+        .border_b_1()
+        .border_color(theme.border)
+        .bg(theme.panel)
+        .child(section_header(theme, "RENT GPUS"))
+        .child(
+            div()
+                .px(px(6.))
+                .py(px(4.))
+                .flex()
+                .flex_col()
+                .gap_2()
+                .text_size(px(10.))
+                .text_color(theme.text_dim)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child("GPUs / box")
+                        .child(
+                            div()
+                                .flex()
+                                .gap_1()
+                                .child(
+                                    theme
+                                        .title_button("−", gpus > 1)
+                                        .id("rent-gpus-dec")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.bump_rent_gpus_per_box(-1, cx);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(20.))
+                                        .text_center()
+                                        .text_color(theme.data)
+                                        .child(gpus.to_string()),
+                                )
+                                .child(
+                                    theme
+                                        .title_button("+", true)
+                                        .id("rent-gpus-inc")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.bump_rent_gpus_per_box(1, cx);
+                                        })),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child("Boxes")
+                        .child(
+                            div()
+                                .flex()
+                                .gap_1()
+                                .child(
+                                    theme
+                                        .title_button("−", count > 1)
+                                        .id("rent-count-dec")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.bump_rent_count(-1, cx);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(20.))
+                                        .text_center()
+                                        .text_color(theme.data)
+                                        .child(count.to_string()),
+                                )
+                                .child(
+                                    theme
+                                        .title_button("+", true)
+                                        .id("rent-count-inc")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.bump_rent_count(1, cx);
+                                        })),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child("Disk GB")
+                        .child(
+                            div()
+                                .flex()
+                                .gap_1()
+                                .child(
+                                    theme
+                                        .title_button("−", disk > 20)
+                                        .id("rent-disk-dec")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.bump_rent_disk_gb(-20, cx);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(28.))
+                                        .text_center()
+                                        .text_color(theme.data)
+                                        .child(disk.to_string()),
+                                )
+                                .child(
+                                    theme
+                                        .title_button("+", true)
+                                        .id("rent-disk-inc")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.bump_rent_disk_gb(20, cx);
+                                        })),
+                                ),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .id("rent-offers")
+                .flex_none()
+                .max_h(px(100.))
+                .overflow_y_scroll()
+                .when(loading, |el| {
+                    el.child(
+                        div()
+                            .px(px(8.))
+                            .py(px(4.))
+                            .text_size(px(10.))
+                            .text_color(theme.text_dim)
+                            .child("loading platforms…"),
+                    )
+                })
+                .when(!loading && offer_rows.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .px(px(8.))
+                            .py(px(4.))
+                            .text_size(px(10.))
+                            .text_color(theme.text_dim)
+                            .child("no platforms — enter filter manually"),
+                    )
+                })
+                .children(offer_rows),
+        )
+        .when_some(err, |el, e| {
+            el.child(
+                div()
+                    .px(px(6.))
+                    .py(px(2.))
+                    .text_size(px(9.))
+                    .text_color(theme.warn)
+                    .child(e),
+            )
+        })
+        .child(
+            div()
+                .flex_none()
+                .p(px(6.))
+                .flex()
+                .gap_2()
+                .child(
+                    theme
+                        .title_button(" cancel ", false)
+                        .id("rent-cancel")
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_rent_panel(cx))),
+                )
+                .child(
+                    theme
+                        .title_button(" RENT ", can_rent)
+                        .id("rent-submit")
+                        .on_click(cx.listener(|this, _, _, cx| this.submit_rent(cx))),
+                ),
+        )
 }
 
 fn node_details(theme: &Theme, node: &TreeNode) -> impl IntoElement {
@@ -221,11 +551,13 @@ pub fn ops_rail(
 ) -> impl IntoElement {
     let jobs = view.jobs.clone();
     let selected_job = view.selected_job.clone();
+    let assigned = view.assigned_boxes();
     let boxes = view.unassigned_boxes();
     let selected_box = view.selected_box.clone();
     let has_fleet = !view.selected_fleet.is_empty();
     let can_assign = selected_box.is_some() && has_fleet;
     let can_stop = has_fleet;
+    let rent_open = view.rent_open;
 
     let job_rows: Vec<_> = jobs
         .iter()
@@ -233,6 +565,11 @@ pub fn ops_rail(
             let sel = selected_job.as_deref() == Some(j.job_id.as_str());
             job_row(theme, j, sel, cx).into_any_element()
         })
+        .collect();
+
+    let assigned_rows: Vec<_> = assigned
+        .iter()
+        .map(|b| assigned_row(theme, b, cx).into_any_element())
         .collect();
 
     let chips: Vec<_> = boxes
@@ -267,6 +604,33 @@ pub fn ops_rail(
                 .overflow_y_scroll()
                 .children(job_rows),
         )
+        // Assigned GPU boxes
+        .child(section_header(
+            theme,
+            if has_fleet {
+                format!("ASSIGNED → {} ({})", view.selected_fleet, assigned.len())
+            } else {
+                format!("ASSIGNED ({})", assigned.len())
+            },
+        ))
+        .child(
+            div()
+                .id("ops-assigned")
+                .flex_none()
+                .max_h(px(120.))
+                .overflow_y_scroll()
+                .when(assigned_rows.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .px(px(8.))
+                            .py(px(4.))
+                            .text_size(px(10.))
+                            .text_color(theme.text_dim)
+                            .child("none assigned"),
+                    )
+                })
+                .children(assigned_rows),
+        )
         // Unassigned GPU boxes
         .child(section_header(theme, format!("UNASSIGNED GPU ({})", boxes.len())))
         .child(
@@ -296,6 +660,7 @@ pub fn ops_rail(
                     .on_click(cx.listener(|this, _, _, cx| this.assign_selected_box(cx))),
             ),
         )
+        .when(rent_open, |el| el.child(rent_panel(view, theme, cx)))
         // Fleet actions
         .child(section_header(theme, "ACTIONS"))
         .child(
@@ -305,6 +670,15 @@ pub fn ops_rail(
                 .flex()
                 .flex_col()
                 .gap_2()
+                .child(
+                    theme
+                        .title_button(
+                            if rent_open { " ▾ RENT GPUS " } else { " ▴ RENT GPUS " },
+                            false,
+                        )
+                        .id("rent-gpus")
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_rent_panel(cx))),
+                )
                 .child(
                     theme
                         .title_button(" + NEW FLEET ", false)

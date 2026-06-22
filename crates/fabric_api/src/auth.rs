@@ -1,8 +1,9 @@
 //! Portal auth — session exchange and break-glass service-token login.
 
-use crate::credentials::default_portal_url;
+use crate::session::SessionBundle;
 use crate::ClientError;
 use fabric_types::{SessionLoginRequest, SessionLoginResponse, TokenExchangeRequest, TokenResponse};
+use reqwest::StatusCode;
 use serde_json::Value;
 
 pub async fn exchange_desktop_code(
@@ -54,6 +55,9 @@ async fn post_json<T: serde::de::DeserializeOwned>(
             .and_then(|v| v.as_str())
             .unwrap_or("request failed")
             .to_string();
+        if status == StatusCode::UNAUTHORIZED {
+            return Err(ClientError::Unauthorized);
+        }
         return Err(ClientError::Api { status, message });
     }
     Ok(serde_json::from_value(body)?)
@@ -150,8 +154,9 @@ pub async fn sign_in_with_google(auth_portal: &str) -> Result<TokenResponse, Cli
             });
         }
         if let Some(code) = cb.code {
+            let exchange_url = SessionBundle::api_portal_url_for_sso_host(auth_portal);
             return exchange_desktop_code(
-                &default_portal_url(),
+                &exchange_url,
                 &TokenExchangeRequest {
                     code,
                     state: cb.state,
@@ -224,6 +229,16 @@ mod tests {
         assert_eq!(cb.state, "xyz");
         assert_eq!(cb.email.as_deref(), Some("a@b.co"));
         assert_eq!(cb.exp, Some(99));
+    }
+
+    #[test]
+    fn rejects_callback_without_state() {
+        assert!(parse_desktop_callback("fabric://auth/callback?code=abc").is_none());
+    }
+
+    #[test]
+    fn rejects_wrong_scheme() {
+        assert!(parse_desktop_callback("https://example.com?state=x").is_none());
     }
 
     #[test]

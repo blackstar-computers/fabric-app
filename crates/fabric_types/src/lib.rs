@@ -4,6 +4,8 @@ mod auth;
 mod fleets;
 mod runspec;
 mod series;
+pub mod topology;
+pub mod viz;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -13,13 +15,24 @@ pub use auth::{
     AUTH_CALLBACK_SCHEME, SSO_PORTAL_URL,
 };
 pub use fleets::{
-    BoxProgressResp, Fleet, FleetsResp, Instance, InstancesResp, Job, JobPod, JobsResp,
-    SseJobEvent, TreeNode, TreeResp,
+    BoxProgressResp, Fleet, FleetsResp, GpuSearchGroup, GpuSearchResp, Instance, InstancesResp,
+    Job, JobPod, JobsResp, SseBoxEvent, SseFleetEvent, SseJobEvent, SseNodeEvent, TreeNode,
+    TreeResp,
 };
 pub use runspec::{
     Headline, RunContext, RunMediaDef, RunMetricDef, RunOutput, RunSpecEnvelope, UiCapabilities,
 };
 pub use series::{nearest_epoch_index, series_latest, RunSeries};
+pub use topology::{
+    FabArrayDesc, FabHeader, FabRegionSpan, TopoDataInMemory, TopoEntry, TopoManifestResp,
+    TopoWeight,
+};
+pub use viz::{
+    CheckpointFile, CheckpointRun, CheckpointsResp, ClassifyStepResp, DriveSpec, DriveType,
+    ReconStepResp, RegionKind, VizGalleryItem, VizGalleryResp, VizGeometry, VizGeometryRegions,
+    VizKind, VizLoadMeta, VizOpenRequest, VizOpenResp, VizRegion, VizStateMeta, VizStatusResp,
+    VizStepRequest, VizStepResp,
+};
 
 pub const DEFAULT_PORTAL_URL: &str = "https://agents.fabric.blackstar.inc";
 pub const SERVICE_TOKEN_HEADER: &str = "X-Fleet-Token";

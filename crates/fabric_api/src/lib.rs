@@ -14,5 +14,7 @@ pub use auth::{
 };
 pub use client::{AuthKind, Client, ClientError};
 pub use credentials::{default_portal_url, load_service_token, save_service_token, CredentialsError};
-pub use session::{clear_session, load_session, save_session, SessionBundle, SessionError};
+pub use session::{
+    clear_session, load_session, save_session, session_expired, SessionBundle, SessionError,
+};
 pub use runtime::spawn as spawn_network;

@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "bucket": "fabric-ckpts",
+  "runs": [
+    {
+      "fleet": "f",
+      "pod": "n1",
+      "run": "mnist_recon_n1",
+      "n_files": 2,
+      "bytes": 1048576,
+      "files": [
+        { "filename": "mnist_recon_n1.pt.best", "kind": "canvas", "epoch": 30 },
+        { "filename": "topology.pt", "kind": "topology" }
+      ]
+    }
+  ]
+}

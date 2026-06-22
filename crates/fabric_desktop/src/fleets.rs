@@ -11,16 +11,17 @@ use crate::fleet_layout::{layout_tree, TreeLayout};
 use crate::fleet_ops::ops_rail;
 use crate::network::{FleetsMsg, NetworkCommand};
 use crate::theme::Theme;
-use fabric_types::{BoxProgressResp, Fleet, FleetsResp, Instance, InstancesResp, Job, TreeResp};
+use fabric_live::{
+    insert_box, merge_instances_reconcile, patch_box, patch_fleet, patch_job, patch_tree_node,
+    PatchOutcome, TreePatchOutcome,
+};
+use fabric_types::{BoxProgressResp, Fleet, FleetsResp, GpuSearchResp, Instance, InstancesResp, Job, TreeResp};
 use futures::channel::mpsc::UnboundedSender;
 use gpui::{div, prelude::*, px, Context, MouseButton, Render, SharedString, Window};
 use serde_json::json;
-use std::collections::HashSet;
-use std::time::{Duration, Instant};
+use std::collections::{HashMap, HashSet};
 
 const DEFAULT_BRANCH: u32 = 8;
-/// Coalesce job SSE bursts — mirrors dashboard [`LIVE_NOTIFY_MIN`].
-const JOB_LIVE_MIN: Duration = Duration::from_millis(150);
 
 /// Drag payload carried from an ops-rail box chip to the graph board drop zone.
 #[derive(Clone, Debug)]
@@ -57,13 +58,29 @@ pub struct FleetsView {
     pub selected_box: Option<String>,
     pub selected_job: Option<String>,
 
-    last_job_live_refresh: Option<Instant>,
+    /// SSE stream connection state, mirrored from the live event stream.
+    pub live: bool,
+    /// `job_id` → index into `jobs`, rebuilt whenever the job list is replaced.
+    job_index: HashMap<String, usize>,
+    /// `box id` → index into `instances`, rebuilt whenever the roster is replaced.
+    box_index: HashMap<String, usize>,
+    /// `fleet id` → index into `fleets`, rebuilt whenever the roster is replaced.
+    fleet_index: HashMap<String, usize>,
+    /// `node tag` → index into `tree.nodes`, rebuilt whenever the tree is replaced.
+    node_index: HashMap<String, usize>,
     tree_pending: HashSet<TreeFetchKey>,
     /// Remaining tree responses expected from an in-flight phased fetch (2 → 0).
     tree_phased_remaining: u8,
     pub progress: Option<BoxProgressResp>,
     progress_contract: Option<String>,
     operator_email: Option<String>,
+    pub(crate) rent_open: bool,
+    pub(crate) rent_gpus_per_box: u32,
+    pub(crate) rent_gpu_filter: String,
+    pub(crate) rent_count: u32,
+    pub(crate) rent_disk_gb: u32,
+    pub(crate) gpu_offers: Option<GpuSearchResp>,
+    pub(crate) gpu_search_loading: bool,
 }
 
 impl FleetsView {
@@ -86,17 +103,35 @@ impl FleetsView {
             selected_node: None,
             selected_box: None,
             selected_job: None,
-            last_job_live_refresh: None,
+            live: false,
+            job_index: HashMap::new(),
+            box_index: HashMap::new(),
+            fleet_index: HashMap::new(),
+            node_index: HashMap::new(),
             tree_pending: HashSet::new(),
             tree_phased_remaining: 0,
             progress: None,
             progress_contract: None,
             operator_email: None,
+            rent_open: false,
+            rent_gpus_per_box: 1,
+            rent_gpu_filter: String::new(),
+            rent_count: 1,
+            rent_disk_gb: 200,
+            gpu_offers: None,
+            gpu_search_loading: false,
         }
     }
 
     pub fn attach(&mut self, cmd_tx: UnboundedSender<NetworkCommand>) {
         self.cmd_tx = Some(cmd_tx);
+    }
+
+    pub fn detach(&mut self) {
+        self.cmd_tx = None;
+        self.refreshing = false;
+        self.rent_open = false;
+        self.gpu_search_loading = false;
     }
 
     pub fn set_operator_email(&mut self, email: Option<String>) {
@@ -109,7 +144,7 @@ impl FleetsView {
     }
 
     pub fn on_visible(&mut self, cx: &mut Context<Self>) {
-        if self.fleets.is_none() {
+        if self.fleets.is_none() || self.instances.is_none() || self.tree.is_none() {
             self.refresh_all(cx);
         }
     }
@@ -193,6 +228,18 @@ impl FleetsView {
         cx.notify();
     }
 
+    /// Refetch the box roster only — used when a live box delta misses the cache.
+    fn fetch_instances(&mut self, cx: &mut Context<Self>) {
+        self.send(NetworkCommand::RefreshInstances);
+        cx.notify();
+    }
+
+    /// Refetch the fleet roster only — used when a live fleet delta misses the cache.
+    fn refresh_fleets(&mut self, cx: &mut Context<Self>) {
+        self.send(NetworkCommand::RefreshFleets);
+        cx.notify();
+    }
+
     pub fn select_fleet(&mut self, id: String, cx: &mut Context<Self>) {
         if self.selected_fleet == id {
             return;
@@ -254,6 +301,7 @@ impl FleetsView {
             cx.notify();
             return;
         }
+        self.optimistic_assign(contract);
         self.send(NetworkCommand::FleetAction {
             action: "assign".into(),
             payload: json!({ "contract": contract, "fleet": self.selected_fleet }),
@@ -295,6 +343,97 @@ impl FleetsView {
         cx.notify();
     }
 
+    pub fn toggle_rent_panel(&mut self, cx: &mut Context<Self>) {
+        self.rent_open = !self.rent_open;
+        if self.rent_open {
+            self.gpu_search_loading = true;
+            self.send(NetworkCommand::FetchGpuSearch {
+                num_gpus: self.rent_gpus_per_box,
+            });
+        }
+        cx.notify();
+    }
+
+    pub fn set_rent_gpus_per_box(&mut self, n: u32, cx: &mut Context<Self>) {
+        self.rent_gpus_per_box = n.max(1);
+        if self.rent_open {
+            self.gpu_search_loading = true;
+            self.send(NetworkCommand::FetchGpuSearch {
+                num_gpus: self.rent_gpus_per_box,
+            });
+        }
+        cx.notify();
+    }
+
+    pub fn bump_rent_gpus_per_box(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let n = (self.rent_gpus_per_box as i32 + delta).max(1) as u32;
+        self.set_rent_gpus_per_box(n, cx);
+    }
+
+    pub fn bump_rent_count(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let n = (self.rent_count as i32 + delta).max(1) as u32;
+        self.set_rent_count(n, cx);
+    }
+
+    pub fn bump_rent_disk_gb(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let n = (self.rent_disk_gb as i32 + delta).max(20) as u32;
+        self.set_rent_disk_gb(n, cx);
+    }
+
+    pub fn select_rent_gpu(&mut self, filter: String, cx: &mut Context<Self>) {
+        self.rent_gpu_filter = filter;
+        cx.notify();
+    }
+
+    pub fn set_rent_count(&mut self, n: u32, cx: &mut Context<Self>) {
+        self.rent_count = n.max(1);
+        cx.notify();
+    }
+
+    pub fn set_rent_disk_gb(&mut self, n: u32, cx: &mut Context<Self>) {
+        self.rent_disk_gb = n.max(20);
+        cx.notify();
+    }
+
+    pub fn submit_rent(&mut self, cx: &mut Context<Self>) {
+        let gpu = self.rent_gpu_filter.trim();
+        if gpu.is_empty() {
+            self.action_msg = Some("RENT — pick a GPU platform".into());
+            cx.notify();
+            return;
+        }
+        self.send(NetworkCommand::FleetAction {
+            action: "rentgpus".into(),
+            payload: json!({
+                "gpu_name": gpu,
+                "count": self.rent_count,
+                "gpus": self.rent_gpus_per_box,
+                "disk": self.rent_disk_gb,
+            }),
+        });
+        self.action_msg = Some(format!("RENT {gpu} ×{}…", self.rent_count).into());
+        self.rent_open = false;
+        cx.notify();
+    }
+
+    pub fn unassign_box(&mut self, contract: &str, cx: &mut Context<Self>) {
+        self.send(NetworkCommand::FleetAction {
+            action: "unassign".into(),
+            payload: json!({ "contract": contract }),
+        });
+        self.action_msg = Some(format!("UNASSIGN {contract}…").into());
+        cx.notify();
+    }
+
+    pub fn destroy_box(&mut self, contract: &str, cx: &mut Context<Self>) {
+        self.send(NetworkCommand::FleetAction {
+            action: "destroybox".into(),
+            payload: json!({ "contract": contract }),
+        });
+        self.action_msg = Some(format!("DESTROY {contract}…").into());
+        cx.notify();
+    }
+
     pub fn refresh_tree(&mut self, cx: &mut Context<Self>) {
         let fleet = self.selected_fleet.clone();
         let branch = self.branch;
@@ -304,20 +443,192 @@ impl FleetsView {
         cx.notify();
     }
 
-    fn flush_job_live(&mut self, cx: &mut Context<Self>) {
-        self.last_job_live_refresh = Some(Instant::now());
-        self.refresh_deck(false, cx);
+    /// Replace the job list and rebuild the `job_id → index` lookup.
+    fn set_jobs(&mut self, jobs: Vec<Job>) {
+        self.job_index = jobs
+            .iter()
+            .enumerate()
+            .map(|(i, j)| (j.job_id.clone(), i))
+            .collect();
+        self.jobs = jobs;
     }
 
-    fn on_job_live(&mut self, cx: &mut Context<Self>) {
-        let now = Instant::now();
-        if self
-            .last_job_live_refresh
-            .is_some_and(|t| now.duration_since(t) < JOB_LIVE_MIN)
-        {
+    /// Replace the box roster and rebuild the `box id → index` lookup.
+    fn set_instances(&mut self, resp: InstancesResp) {
+        self.rebuild_box_index(&resp.instances);
+        self.instances = Some(resp);
+    }
+
+    fn rebuild_box_index(&mut self, instances: &[Instance]) {
+        self.box_index = instances
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.id_str(), i))
+            .collect();
+    }
+
+    /// Show the box immediately under the target fleet while the portal stages it.
+    fn optimistic_assign(&mut self, contract: &str) {
+        let Some(resp) = self.instances.as_mut() else {
             return;
+        };
+        let Some(idx) = self.box_index.get(contract).copied() else {
+            return;
+        };
+        let fleet_name = self
+            .fleets
+            .as_ref()
+            .and_then(|f| {
+                f.fleets
+                    .iter()
+                    .find(|fl| fl.id == self.selected_fleet)
+                    .map(|fl| fl.name.clone())
+            });
+        let row = &mut resp.instances[idx];
+        row.fleet_id = Some(self.selected_fleet.clone());
+        row.fleet_name = fleet_name;
+        row.assignable = Some(false);
+        row.provision_state = Some("booting".into());
+        row.status = Some("booting".into());
+    }
+
+    fn apply_box_delta(&mut self, ev: &fabric_types::SseBoxEvent, cx: &mut Context<Self>) {
+        if self.instances.is_none() {
+            let mut resp = InstancesResp {
+                ok: true,
+                configured: true,
+                ..Default::default()
+            };
+            insert_box(&mut resp, ev);
+            self.set_instances(resp);
+        } else {
+            {
+                let Some(resp) = self.instances.as_mut() else {
+                    return;
+                };
+                match patch_box(resp, ev) {
+                    PatchOutcome::Updated => {}
+                    PatchOutcome::NotFound => insert_box(resp, ev),
+                }
+            }
+            if let Some(instances) = self.instances.as_ref().map(|r| r.instances.clone()) {
+                self.rebuild_box_index(&instances);
+            }
         }
-        self.flush_job_live(cx);
+        self.on_box_lifecycle(ev, cx);
+    }
+
+    /// React to a box reaching a settled lifecycle state: drop the provisioning
+    /// bar for that contract and refresh the relay tree so the new node appears.
+    fn on_box_lifecycle(&mut self, ev: &fabric_types::SseBoxEvent, cx: &mut Context<Self>) {
+        let id = ev.id_str();
+        let provisioned = matches!(
+            ev.provision_state.as_deref(),
+            Some("assigned" | "untracked" | "ready")
+        ) || ev.status.as_deref() == Some("ready");
+        let failed = matches!(
+            ev.provision_state.as_deref(),
+            Some("error" | "failed" | "destroyed")
+        );
+
+        if self.progress_contract.as_deref() == Some(id.as_str()) && (provisioned || failed) {
+            self.clear_progress();
+        }
+        if provisioned && !self.selected_fleet.is_empty() {
+            let targets_fleet = ev
+                .fleet_id
+                .as_ref()
+                .and_then(|inner| inner.as_ref())
+                .is_some_and(|fid| fid == &self.selected_fleet);
+            if targets_fleet {
+                self.fetch_tree_phased(cx);
+            }
+        }
+    }
+
+    fn refresh_after_action(&mut self, action: &str, cx: &mut Context<Self>) {
+        match action {
+            // Pending chips are inserted locally and a reconcile poll catches up,
+            // so an immediate (racing) fetch_instances would just return stale rows.
+            "rentgpus" => {}
+            // Optimistic booting + SSE/progress poll own the assign lifecycle.
+            "assign" => {}
+            // Unassign/destroy also reshape the fleet's relay tree.
+            "unassign" | "destroybox" => {
+                self.fetch_instances(cx);
+                if !self.selected_fleet.is_empty() {
+                    self.fetch_tree_phased(cx);
+                }
+            }
+            _ => self.refresh_deck(true, cx),
+        }
+    }
+
+    /// Handle a successful `rentgpus` response: seed provisioning chips from the
+    /// `pending` array locally (immediate feedback) and start a background poll
+    /// that reconciles them against the portal's real box rows.
+    fn handle_rent_ok(&mut self, v: &serde_json::Value, cx: &mut Context<Self>) {
+        let gpu_name = v
+            .get("gpu_name")
+            .and_then(|g| g.as_str())
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                self.gpu_offers.as_ref().and_then(|o| {
+                    o.groups
+                        .iter()
+                        .find(|g| g.gpu_filter == self.rent_gpu_filter)
+                        .map(|g| g.gpu_name.clone())
+                })
+            })
+            .unwrap_or_else(|| self.rent_gpu_filter.clone());
+        let num_gpus = v
+            .get("gpus")
+            .and_then(|g| g.as_i64())
+            .unwrap_or(self.rent_gpus_per_box as i64);
+
+        if let Some(pending) = v.get("pending").and_then(|p| p.as_array()) {
+            if self.instances.is_none() {
+                self.instances = Some(InstancesResp {
+                    ok: true,
+                    configured: true,
+                    ..Default::default()
+                });
+            }
+            if let Some(resp) = self.instances.as_mut() {
+                for entry in pending {
+                    if let Some(id) = entry.as_str() {
+                        insert_pending_box_id(resp, id, &gpu_name, num_gpus);
+                    } else {
+                        insert_pending_box(resp, entry, &gpu_name, num_gpus);
+                    }
+                }
+            }
+            if let Some(instances) = self.instances.as_ref().map(|r| r.instances.clone()) {
+                self.rebuild_box_index(&instances);
+            }
+        }
+        self.send(NetworkCommand::PollInstancesReconcile);
+        cx.notify();
+    }
+
+    /// Replace the fleet roster and rebuild the `fleet id → index` lookup.
+    fn set_fleets(&mut self, resp: FleetsResp) {
+        self.fleet_index = resp
+            .fleets
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.id.clone(), i))
+            .collect();
+        self.fleets = Some(resp);
+    }
+
+    /// Recompute layout (and the node index) from the cached tree after an
+    /// in-place topology patch, reusing the full [`Self::apply_tree`] funnel.
+    fn relayout_from_cache(&mut self) {
+        if let Some(tree) = self.tree.take() {
+            self.apply_tree(tree);
+        }
     }
 
     pub fn handle_msg(&mut self, msg: FleetsMsg, cx: &mut Context<Self>) {
@@ -338,7 +649,7 @@ impl FleetsView {
                     };
                     save_selected_fleet(&self.selected_fleet);
                 }
-                self.fleets = Some(resp);
+                self.set_fleets(resp);
                 cx.notify();
             }
             FleetsMsg::Fleets(Err(e)) => {
@@ -346,11 +657,20 @@ impl FleetsView {
                 self.error = Some(format!("FLEETS — {e}").into());
                 cx.notify();
             }
-            FleetsMsg::Instances(Ok(resp)) => {
-                self.instances = Some(resp);
+            FleetsMsg::Instances { result: Ok(fetched), reconcile } => {
+                let resp = if reconcile {
+                    if let Some(cached) = self.instances.as_ref() {
+                        merge_instances_reconcile(cached, fetched)
+                    } else {
+                        fetched
+                    }
+                } else {
+                    fetched
+                };
+                self.set_instances(resp);
                 cx.notify();
             }
-            FleetsMsg::Instances(Err(e)) => {
+            FleetsMsg::Instances { result: Err(e), .. } => {
                 self.error = Some(format!("BOXES — {e}").into());
                 cx.notify();
             }
@@ -381,12 +701,37 @@ impl FleetsView {
                 cx.notify();
             }
             FleetsMsg::Jobs { result } => {
-                if let Ok(j) = result {
-                    self.jobs = j.jobs;
-                    if let Some(sel) = &self.selected_job {
-                        if !self.jobs.iter().any(|j| &j.job_id == sel) {
+                match result {
+                    Ok(j) => {
+                        self.set_jobs(j.jobs);
+                        let drop_sel = self
+                            .selected_job
+                            .as_ref()
+                            .is_some_and(|sel| !self.job_index.contains_key(sel));
+                        if drop_sel {
                             self.selected_job = None;
                         }
+                    }
+                    Err(e) => {
+                        self.error = Some(format!("JOBS — {e}").into());
+                    }
+                }
+                cx.notify();
+            }
+            FleetsMsg::GpuSearch { result } => {
+                self.gpu_search_loading = false;
+                match result {
+                    Ok(resp) => {
+                        if self.rent_gpu_filter.is_empty() {
+                            if let Some(first) = resp.groups.first() {
+                                self.rent_gpu_filter = first.gpu_filter.clone();
+                            }
+                        }
+                        self.gpu_offers = Some(resp);
+                    }
+                    Err(e) => {
+                        self.gpu_offers = None;
+                        self.action_msg = Some(format!("GPU SEARCH — {e}").into());
                     }
                 }
                 cx.notify();
@@ -397,7 +742,20 @@ impl FleetsView {
                         self.action_msg = Some(format!("{action} — {err}").into());
                     } else {
                         self.action_msg = Some(format!("{action} OK").into());
-                        self.refresh_deck(true, cx);
+                        if action == "rentgpus" {
+                            self.handle_rent_ok(&v, cx);
+                        }
+                        if action == "newfleet" {
+                            if let Some(id) = v.get("id").and_then(|i| i.as_str()) {
+                                if !id.is_empty() {
+                                    self.selected_fleet = id.to_string();
+                                    save_selected_fleet(id);
+                                    self.selected_node = None;
+                                    self.selected_job = None;
+                                }
+                            }
+                        }
+                        self.refresh_after_action(&action, cx);
                     }
                     cx.notify();
                 }
@@ -415,7 +773,10 @@ impl FleetsView {
                         self.progress = Some(resp.clone());
                         if resp.is_terminal() {
                             self.clear_progress();
-                            self.refresh_deck(true, cx);
+                            self.fetch_instances(cx);
+                            if !self.selected_fleet.is_empty() {
+                                self.fetch_tree_phased(cx);
+                            }
                         }
                     }
                     Err(e) => {
@@ -430,20 +791,78 @@ impl FleetsView {
                 self.refreshing = true;
                 cx.notify();
             }
-            FleetsMsg::JobLive => {
-                self.on_job_live(cx);
+            FleetsMsg::LiveConnected(connected) => {
+                if self.live != connected {
+                    self.live = connected;
+                    cx.notify();
+                }
+            }
+            FleetsMsg::JobDelta(ev) => {
+                if ev.fleet != self.selected_fleet {
+                    return;
+                }
+                match patch_job(&mut self.jobs, &ev) {
+                    PatchOutcome::Updated => cx.notify(),
+                    PatchOutcome::NotFound => self.fetch_jobs(cx),
+                }
+            }
+            FleetsMsg::BoxDelta(ev) => {
+                self.apply_box_delta(&ev, cx);
+                cx.notify();
+            }
+            FleetsMsg::FleetDelta(ev) => {
+                // Patch the fleet roster row in place; a miss means a new (or
+                // dropped) fleet, so refetch the roster only.
+                if self.fleet_index.contains_key(&ev.id) {
+                    if let Some(resp) = self.fleets.as_mut() {
+                        patch_fleet(resp, &ev);
+                    }
+                    cx.notify();
+                } else {
+                    self.refresh_fleets(cx);
+                }
+            }
+            FleetsMsg::NodeDelta(ev) => {
+                // Topology nodes are scoped to the visible fleet; ignore deltas
+                // for any other fleet's tree.
+                if ev.fleet != self.selected_fleet {
+                    return;
+                }
+                // No cached tree yet — kick off a debounced probe to populate it.
+                if self.tree.is_none() {
+                    self.fetch_tree(true, cx);
+                    return;
+                }
+                let topology = ev.parent.is_some() || ev.children.is_some();
+                if let Some(tree) = self.tree.as_mut() {
+                    let outcome = patch_tree_node(tree, &ev);
+                    match outcome {
+                        TreePatchOutcome::Inserted => self.relayout_from_cache(),
+                        TreePatchOutcome::Updated if topology => self.relayout_from_cache(),
+                        TreePatchOutcome::Updated => {}
+                    }
+                }
+                cx.notify();
             }
         }
     }
 
     fn apply_tree(&mut self, tree: TreeResp) {
+        self.node_index = tree
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.tag.clone(), i))
+            .collect();
         self.layout = layout_tree(&tree.nodes, tree.root.as_deref());
         self.fleet_size = tree.fleet;
         self.board_scale = fit_scale(&self.layout);
-        if let Some(sel) = &self.selected_node {
-            if !tree.nodes.iter().any(|n| &n.tag == sel) {
-                self.selected_node = None;
-            }
+        let drop_node = self
+            .selected_node
+            .as_ref()
+            .is_some_and(|sel| !self.node_index.contains_key(sel));
+        if drop_node {
+            self.selected_node = None;
         }
         self.tree = Some(tree);
     }
@@ -458,11 +877,38 @@ impl FleetsView {
             .map(|i| {
                 i.instances
                     .iter()
-                    .filter(|b| b.fleet_id.is_none() && b.assignable.unwrap_or(false))
+                    .filter(|b| {
+                        b.fleet_id.is_none()
+                            && !is_terminal_box(b)
+                            && (b.assignable.unwrap_or(false) || is_in_flight_box(b))
+                    })
                     .cloned()
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub(crate) fn assigned_boxes(&self) -> Vec<Instance> {
+        let fleet = &self.selected_fleet;
+        self.instances
+            .as_ref()
+            .map(|i| {
+                i.instances
+                    .iter()
+                    .filter(|b| {
+                        !is_terminal_box(b)
+                            && b.fleet_id.as_deref() == Some(fleet.as_str())
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn instances_summary(&self) -> Option<String> {
+        self.instances.as_ref().map(|i| {
+            format!("{} boxes · {} unassigned", i.total, i.unassigned)
+        })
     }
 
     fn fleet_rows(&self) -> &[Fleet] {
@@ -485,12 +931,23 @@ impl Render for FleetsView {
         let operator_email = self.operator_email.clone();
         let status_left = action
             .as_ref()
-            .map(|m| SharedString::from(format!("OPS │ {m}")));
-        let show_status = status_left.is_some() || operator_email.is_some();
+            .map(|m| SharedString::from(format!("OPS │ {m}")))
+            .or_else(|| {
+                self.instances_summary()
+                    .map(SharedString::from)
+            })
+            .or_else(|| {
+                if self.refreshing || tree_loading {
+                    Some(SharedString::from("loading…"))
+                } else {
+                    None
+                }
+            });
 
         div()
             .flex_1()
             .min_h_0()
+            .w_full()
             .flex()
             .flex_col()
             .when_some(err, |el, e| {
@@ -516,13 +973,113 @@ impl Render for FleetsView {
             .when_some(progress, |el, p| {
                 el.child(progress_bar(&theme, &p))
             })
-            .when(show_status, |el| {
-                el.child(theme.status_bar(
-                    status_left.unwrap_or_else(|| SharedString::from("")),
-                    operator_email.map(SharedString::from),
-                ))
-            })
+            .child(theme.status_bar(
+                status_left.unwrap_or_else(|| SharedString::from("")),
+                operator_email.map(SharedString::from),
+            ))
     }
+}
+
+/// Build a provisioning chip from one entry of a `rentgpus` `pending` array.
+fn insert_pending_box_id(resp: &mut InstancesResp, id: &str, gpu_name: &str, num_gpus: i64) {
+    if resp.instances.iter().any(|i| i.id_str() == id) {
+        return;
+    }
+    resp.instances.push(Instance {
+        id: serde_json::Value::String(id.into()),
+        label: Some("GPU (provisioning)".to_string()),
+        provider: "nebius".into(),
+        gpu_name: Some(gpu_name.into()),
+        num_gpus: Some(num_gpus),
+        status: Some("provisioning".into()),
+        provision_state: Some("provisioning".into()),
+        assignable: Some(false),
+        ..Default::default()
+    });
+    resp.total = resp.instances.len() as i64;
+    resp.unassigned = resp
+        .instances
+        .iter()
+        .filter(|i| i.fleet_id.is_none())
+        .count() as i64;
+}
+
+/// Build a provisioning chip from a JSON object in the `pending` array.
+fn insert_pending_box(
+    resp: &mut InstancesResp,
+    entry: &serde_json::Value,
+    gpu_name: &str,
+    num_gpus: i64,
+) {
+    let id = entry
+        .get("id")
+        .or_else(|| entry.get("contract"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    if id.is_null() {
+        return;
+    }
+    let id_str = match &id {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        other => other.to_string(),
+    };
+    if resp.instances.iter().any(|i| i.id_str() == id_str) {
+        return;
+    }
+    let gpu_name = entry
+        .get("gpu_name")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| gpu_name.to_string());
+    let num_gpus = entry
+        .get("num_gpus")
+        .or_else(|| entry.get("gpus"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(num_gpus);
+    let label = entry
+        .get("label")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let fleet_id = entry
+        .get("fleet_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let provision_state = entry
+        .get("provision_state")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| Some("provisioning".into()));
+
+    resp.instances.push(Instance {
+        id,
+        label,
+        provider: "nebius".into(),
+        gpu_name: Some(gpu_name),
+        num_gpus: Some(num_gpus),
+        status: Some("provisioning".into()),
+        fleet_id,
+        provision_state,
+        assignable: Some(false),
+        ..Default::default()
+    });
+    resp.total = resp.instances.len() as i64;
+    resp.unassigned = resp
+        .instances
+        .iter()
+        .filter(|i| i.fleet_id.is_none())
+        .count() as i64;
+}
+
+fn is_in_flight_box(inst: &Instance) -> bool {
+    matches!(
+        inst.provision_state.as_deref(),
+        Some("booting" | "provisioning" | "creating")
+    ) || matches!(inst.status.as_deref(), Some("booting" | "provisioning" | "creating"))
+}
+
+fn is_terminal_box(inst: &Instance) -> bool {
+    inst.provision_state.as_deref() == Some("destroyed")
 }
 
 fn progress_bar(theme: &Theme, progress: &BoxProgressResp) -> impl IntoElement {

@@ -1,0 +1,24 @@
+{
+  "topologies": [
+    {
+      "file": "mnist_recon.topo",
+      "run": "mnist_recon_n1",
+      "status": "ready",
+      "viewable": true,
+      "R": 64,
+      "C": 128,
+      "n_planes": 3,
+      "E": 12000000,
+      "E_view": 8000
+    }
+  ],
+  "weights": [
+    {
+      "file": "mnist_recon.best.weights",
+      "run": "mnist_recon_n1",
+      "ckpt": "best",
+      "epoch": 30,
+      "psnr": 28.5
+    }
+  ]
+}
